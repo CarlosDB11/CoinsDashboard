@@ -84,9 +84,38 @@ const bot = new TelegramBot(BOT_TOKEN, {
     }
 });
 
+// Rate limiting para evitar 429 errors
+let lastBotAction = 0;
+const BOT_RATE_LIMIT = 1000; // 1 segundo entre acciones
+
+async function safeBotAction(action) {
+    const now = Date.now();
+    const timeSinceLastAction = now - lastBotAction;
+    
+    if (timeSinceLastAction < BOT_RATE_LIMIT) {
+        await new Promise(resolve => setTimeout(resolve, BOT_RATE_LIMIT - timeSinceLastAction));
+    }
+    
+    try {
+        const result = await action();
+        lastBotAction = Date.now();
+        return result;
+    } catch (error) {
+        if (error.response?.statusCode === 429) {
+            const retryAfter = parseInt(error.response.headers['retry-after']) || 5;
+            log(`Rate limited, esperando ${retryAfter} segundos`, "ERROR");
+            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+            return await action();
+        }
+        throw error;
+    }
+}
+
 // Reducir logs verbosos del bot
 bot.on('polling_error', (error) => {
-    log(`Polling error: ${error.message}`, "ERROR");
+    if (!error.message.includes('ETELEGRAM') && !error.message.includes('429')) {
+        log(`Polling error: ${error.message}`, "ERROR");
+    }
 });
 
 // Suprimir logs excesivos de request
@@ -486,28 +515,42 @@ bot.onText(/[\/\.]live_recovery/, async (msg) => {
 bot.onText(/[\/\.]live_all/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     
-    // Resetear todos los IDs para forzar recreación
-    dashboardMsgId = null;
-    liveListIds.viral = null;
-    liveListIds.recovery = null;
-    
-    // Recrear todas las listas
-    const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
-    const recoveryTokens = Object.values(activeTokens).filter(t => {
-        const now = Date.now();
-        return t.lastRecoveryTime > 0 && (
-            (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
-            (now - t.lastRecoveryTime) < LIST_HOLD_TIME
+    try {
+        // Resetear todos los IDs para forzar recreación
+        dashboardMsgId = null;
+        liveListIds.viral = null;
+        liveListIds.recovery = null;
+        
+        // Recrear todas las listas con delays para evitar rate limiting
+        const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
+        const recoveryTokens = Object.values(activeTokens).filter(t => {
+            const now = Date.now();
+            return t.lastRecoveryTime > 0 && (
+                (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
+                (now - t.lastRecoveryTime) < LIST_HOLD_TIME
+            );
+        });
+        
+        await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 segundos de delay
+        
+        await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 segundos de delay
+        
+        await updateDashboardMessage();
+        
+        saveDB();
+        log("Todas las listas en vivo recreadas por comando /live_all", "INFO");
+        
+        await safeBotAction(() => 
+            bot.sendMessage(DESTINATION_ID, "✅ Todas las listas en vivo han sido recreadas")
         );
-    });
-    
-    await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
-    await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
-    await updateDashboardMessage();
-    
-    saveDB();
-    log("Todas las listas en vivo recreadas por comando /live_all", "INFO");
-    await bot.sendMessage(DESTINATION_ID, "✅ Todas las listas en vivo han sido recreadas");
+    } catch (error) {
+        log(`Error en /live_all: ${error.message}`, "ERROR");
+        await safeBotAction(() => 
+            bot.sendMessage(DESTINATION_ID, "❌ Error al recrear las listas. Intenta de nuevo en unos segundos.")
+        );
+    }
 });
 
 // ==========================================
@@ -680,14 +723,18 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
             });
         } catch (e) {
             if (e.message.includes("not found")) {
-                const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+                const sent = await safeBotAction(() => 
+                    bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+                );
                 liveListIds[type] = sent.message_id;
                 saveDB();
                 log(`Mensaje lista [${type}] recreado tras borrado manual.`, "LIVE");
             }
         }
     } else {
-        const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+        const sent = await safeBotAction(() => 
+            bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+        );
         liveListIds[type] = sent.message_id;
         saveDB();
         log(`Nuevo mensaje de lista creado: [${type}]`, "LIVE");
@@ -805,12 +852,30 @@ async function updateDashboardMessage() {
 
     if (!dashboardMsgId) {
         try { 
-            const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true }); 
+            const sent = await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+            ); 
             dashboardMsgId = sent.message_id; 
             saveDB(); 
         } catch (e) { log(`Error creando Dashboard: ${e.message}`, "ERROR"); }
     } else {
-        try { await bot.editMessageText(text, { chat_id: DESTINATION_ID, message_id: dashboardMsgId, parse_mode: 'HTML', disable_web_page_preview: true }); } catch (e) {}
+        try { 
+            await bot.editMessageText(text, { 
+                chat_id: DESTINATION_ID, 
+                message_id: dashboardMsgId, 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true 
+            }); 
+        } catch (e) {
+            if (e.message.includes("not found")) {
+                dashboardMsgId = null;
+                const sent = await safeBotAction(() => 
+                    bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+                );
+                dashboardMsgId = sent.message_id;
+                saveDB();
+            }
+        }
     }
 }
 
