@@ -1,0 +1,18 @@
+{
+  "name": "telegram-tracker-bot",
+  "version": "1.0.0",
+  "description": "Bot tracker de Solana",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "telegram": "^2.19.10",
+    "node-telegram-bot-api": "^0.64.0",
+    "input": "^1.0.0",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
