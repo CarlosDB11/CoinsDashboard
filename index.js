@@ -156,6 +156,11 @@ bot.onText(/[\/\.]help/, async (msg) => {
         `• <code>/top global</code> ➔ Ver mejores ganancias de todo el bot.\n` +
         `• <code>/dashboard</code> ➔ Fuerza el envío o actualización del Dashboard.\n\n` +
 
+        `<b>📋 MOSTRAR LISTAS COMPLETAS</b>\n` +
+        `• <code>/viral</code> ➔ Mostrar lista completa Viral (top 10).\n` +
+        `• <code>/recovery</code> ➔ Mostrar lista completa Recovery (top 10).\n` +
+        `• <code>/stats</code> ➔ Ver estadísticas generales del bot.\n\n` +
+
         `<b>🧹 LIMPIEZA VISUAL (No borra datos)</b>\n` +
         `• <code>/clean viral</code> ➔ Elimina el mensaje de lista Viral del chat.\n` +
         `• <code>/clean recovery</code> ➔ Elimina el mensaje de lista Recovery.\n` +
@@ -264,6 +269,119 @@ bot.onText(/[\/\.]purge (\d+)/, async (msg, match) => {
         await bot.sendMessage(DESTINATION_ID, `🗑️ Eliminados ${deletedCount} tokens antiguos.`); 
     }
     else await bot.sendMessage(DESTINATION_ID, `✅ Nada que purgar.`);
+});
+
+// COMANDO: MOSTRAR LISTA VIRAL
+bot.onText(/[\/\.]viral/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
+    
+    if (viralTokens.length === 0) {
+        return bot.sendMessage(DESTINATION_ID, "🔥 <b>Lista Viral vacía</b>\n\n<i>No hay tokens con 3+ menciones actualmente.</i>", { parse_mode: 'HTML' });
+    }
+
+    // Ordenar por ganancia
+    viralTokens.sort((a, b) => {
+        const statsA = a.listStats ? a.listStats['viral'] : null;
+        const statsB = b.listStats ? b.listStats['viral'] : null;
+        const entryFdvA = statsA ? statsA.entryFdv : a.entryFdv;
+        const entryFdvB = statsB ? statsB.entryFdv : b.entryFdv;
+        const growthA = (a.currentFdv / entryFdvA - 1) * 100;
+        const growthB = (b.currentFdv / entryFdvB - 1) * 100;
+        return growthB - growthA;
+    });
+
+    const topTokens = viralTokens.slice(0, 10);
+    let text = "🔥 <b>LISTA VIRAL COMPLETA</b> 🔥\n\n";
+    
+    topTokens.forEach((t, i) => {
+        const stats = t.listStats ? t.listStats['viral'] : null;
+        const entryFdv = stats ? stats.entryFdv : t.entryFdv;
+        const growth = ((t.currentFdv / entryFdv - 1) * 100).toFixed(0);
+        const trendIcon = parseFloat(growth) >= 0 ? '🟢' : '🔴';
+        
+        text += `${i + 1}. ${trendIcon} <b>${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
+        text += `   💰 ${formatCurrency(entryFdv)} ➔ ${formatCurrency(t.currentFdv)}\n`;
+        text += `   🗣 ${t.mentions.length} menciones\n\n`;
+    });
+
+    await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+});
+
+// COMANDO: MOSTRAR LISTA RECOVERY
+bot.onText(/[\/\.]recovery/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    const recoveryTokens = Object.values(activeTokens).filter(t => t.lastRecoveryTime > 0);
+    
+    if (recoveryTokens.length === 0) {
+        return bot.sendMessage(DESTINATION_ID, "♻️ <b>Lista Recovery vacía</b>\n\n<i>No hay tokens en recuperación actualmente.</i>", { parse_mode: 'HTML' });
+    }
+
+    // Ordenar por tiempo de recovery más reciente
+    recoveryTokens.sort((a, b) => b.lastRecoveryTime - a.lastRecoveryTime);
+
+    const topTokens = recoveryTokens.slice(0, 10);
+    let text = "♻️ <b>LISTA RECOVERY COMPLETA</b> ♻️\n\n";
+    
+    topTokens.forEach((t, i) => {
+        const stats = t.listStats ? t.listStats['recovery'] : null;
+        const entryFdv = stats ? stats.entryFdv : t.entryFdv;
+        const growth = ((t.currentFdv / entryFdv - 1) * 100).toFixed(0);
+        const trendIcon = parseFloat(growth) >= 0 ? '🟢' : '🔴';
+        
+        text += `${i + 1}. ${trendIcon} <b>${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
+        text += `   💰 ${formatCurrency(entryFdv)} ➔ ${formatCurrency(t.currentFdv)}\n`;
+        text += `   ⏰ Recovery: ${getTimeOnly(t.lastRecoveryTime)}\n\n`;
+    });
+
+    await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+});
+
+// COMANDO: ESTADÍSTICAS DE TOKENS EN SEGUIMIENTO
+bot.onText(/[\/\.]stats/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    const allTokens = Object.values(activeTokens);
+    const viralCount = allTokens.filter(t => t.mentions.length >= 3).length;
+    const recoveryCount = allTokens.filter(t => t.lastRecoveryTime > 0).length;
+    const winnersCount = allTokens.filter(t => t.currentFdv > t.entryFdv).length;
+    const losersCount = allTokens.filter(t => t.currentFdv < t.entryFdv).length;
+    
+    // Calcular MC total
+    const totalMC = allTokens.reduce((sum, t) => sum + t.currentFdv, 0);
+    
+    // Token con mejor performance
+    let bestToken = null;
+    let bestGrowth = 0;
+    allTokens.forEach(t => {
+        const growth = (t.currentFdv / t.entryFdv - 1) * 100;
+        if (growth > bestGrowth) {
+            bestGrowth = growth;
+            bestToken = t;
+        }
+    });
+
+    let text = "📊 <b>ESTADÍSTICAS DEL BOT</b> 📊\n\n";
+    text += `🎯 <b>Tokens en Seguimiento:</b> ${allTokens.length}\n`;
+    text += `🔥 <b>En Lista Viral:</b> ${viralCount}\n`;
+    text += `♻️ <b>En Lista Recovery:</b> ${recoveryCount}\n\n`;
+    
+    text += `📈 <b>Ganadores:</b> ${winnersCount} (${((winnersCount/allTokens.length)*100).toFixed(1)}%)\n`;
+    text += `📉 <b>Perdedores:</b> ${losersCount} (${((losersCount/allTokens.length)*100).toFixed(1)}%)\n\n`;
+    
+    text += `💰 <b>MC Total Tracked:</b> ${formatCurrency(totalMC)}\n\n`;
+    
+    if (bestToken) {
+        text += `🏆 <b>Mejor Performance:</b>\n`;
+        text += `   ${escapeHtml(bestToken.symbol)} (+${bestGrowth.toFixed(0)}%)\n`;
+        text += `   ${formatCurrency(bestToken.entryFdv)} ➔ ${formatCurrency(bestToken.currentFdv)}\n\n`;
+    }
+    
+    text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
+
+    await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
 });
 
 // ==========================================
