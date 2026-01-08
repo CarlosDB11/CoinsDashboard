@@ -161,6 +161,12 @@ bot.onText(/[\/\.]help/, async (msg) => {
         `• <code>/recovery</code> ➔ Mostrar lista completa Recovery (top 10).\n` +
         `• <code>/stats</code> ➔ Ver estadísticas generales del bot.\n\n` +
 
+        `<b>📡 RECREAR MENSAJES EN VIVO</b>\n` +
+        `• <code>/dashboard</code> ➔ Recrear mensaje Dashboard en vivo.\n` +
+        `• <code>/live_viral</code> ➔ Recrear mensaje Viral en vivo.\n` +
+        `• <code>/live_recovery</code> ➔ Recrear mensaje Recovery en vivo.\n` +
+        `• <code>/live_all</code> ➔ Recrear TODOS los mensajes en vivo.\n\n` +
+
         `<b>🧹 LIMPIEZA VISUAL (No borra datos)</b>\n` +
         `• <code>/clean viral</code> ➔ Elimina el mensaje de lista Viral del chat.\n` +
         `• <code>/clean recovery</code> ➔ Elimina el mensaje de lista Recovery.\n` +
@@ -382,6 +388,86 @@ bot.onText(/[\/\.]stats/, async (msg) => {
     text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
 
     await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+});
+
+// COMANDO: FORZAR MENSAJE EN VIVO DASHBOARD
+bot.onText(/[\/\.]dashboard/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    // Forzar recreación del dashboard
+    dashboardMsgId = null;
+    await updateDashboardMessage();
+    log("Dashboard forzado por comando /dashboard", "INFO");
+});
+
+// COMANDO: FORZAR MENSAJE EN VIVO VIRAL
+bot.onText(/[\/\.]live_viral/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
+    
+    // Forzar recreación del mensaje en vivo
+    liveListIds.viral = null;
+    await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
+    log("Lista Viral en vivo forzada por comando /live_viral", "INFO");
+    
+    if (viralTokens.length === 0) {
+        await bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Viral recreada (vacía - no hay tokens con 3+ menciones)");
+    } else {
+        await bot.sendMessage(DESTINATION_ID, `✅ Lista Viral en vivo recreada con ${viralTokens.length} tokens`);
+    }
+});
+
+// COMANDO: FORZAR MENSAJE EN VIVO RECOVERY
+bot.onText(/[\/\.]live_recovery/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    const recoveryTokens = Object.values(activeTokens).filter(t => {
+        const now = Date.now();
+        return t.lastRecoveryTime > 0 && (
+            (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
+            (now - t.lastRecoveryTime) < LIST_HOLD_TIME
+        );
+    });
+    
+    // Forzar recreación del mensaje en vivo
+    liveListIds.recovery = null;
+    await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
+    log("Lista Recovery en vivo forzada por comando /live_recovery", "INFO");
+    
+    if (recoveryTokens.length === 0) {
+        await bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Recovery recreada (vacía - no hay tokens en recuperación)");
+    } else {
+        await bot.sendMessage(DESTINATION_ID, `✅ Lista Recovery en vivo recreada con ${recoveryTokens.length} tokens`);
+    }
+});
+
+// COMANDO: RECREAR TODAS LAS LISTAS EN VIVO
+bot.onText(/[\/\.]live_all/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    // Resetear todos los IDs para forzar recreación
+    dashboardMsgId = null;
+    liveListIds.viral = null;
+    liveListIds.recovery = null;
+    
+    // Recrear todas las listas
+    const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
+    const recoveryTokens = Object.values(activeTokens).filter(t => {
+        const now = Date.now();
+        return t.lastRecoveryTime > 0 && (
+            (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
+            (now - t.lastRecoveryTime) < LIST_HOLD_TIME
+        );
+    });
+    
+    await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
+    await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
+    await updateDashboardMessage();
+    
+    saveDB();
+    log("Todas las listas en vivo recreadas por comando /live_all", "INFO");
+    await bot.sendMessage(DESTINATION_ID, "✅ Todas las listas en vivo han sido recreadas");
 });
 
 // ==========================================
