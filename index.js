@@ -24,7 +24,18 @@ const UPDATE_INTERVAL = 10000;
 const MIN_GROWTH_SHOW = 1.30;   
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
-const DB_FILE = 'tokens_db.json';
+// --- RUTA SEGURA PARA DATOS ---
+const DATA_FOLDER = './data'; // Nombre de la carpeta "caja fuerte"
+
+// Si la carpeta no existe, la creamos (para que no de error)
+if (!fs.existsSync(DATA_FOLDER)){
+    fs.mkdirSync(DATA_FOLDER);
+}
+
+// Guardamos los archivos DENTRO de esa carpeta
+const DB_FILE = `${DATA_FOLDER}/tokens_db.json`;
+// La sesión también conviene guardarla ahí si quieres que no se pierda,
+// pero como la subes desde tu PC, es opcional. El DB_FILE es el importante.
 const SESSION_FILE = 'session.txt';
 const SOLANA_ADDRESS_REGEX = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
 
