@@ -46,7 +46,6 @@ let simulationAmount = 7;
 let simulationTimeMinutes = 2; // <--- NUEVA VARIABLE (Minutos)
 let liveListIds = {
     recovery: null,
-    breakout: null,
     viral: null
 };
 
@@ -113,7 +112,7 @@ function loadDB() {
             const data = JSON.parse(fs.readFileSync(DB_FILE));
             activeTokens = data.tokens || {};
             dashboardMsgId = data.dashboardId || null;
-            liveListIds = data.liveListIds || { recovery: null, breakout: null, viral: null };
+            liveListIds = data.liveListIds || { recovery: null, viral: null };
             simulationAmount = data.simulationAmount || 7;
             simulationTimeMinutes = data.simulationTimeMinutes || 2; // <--- CARGAR
 
@@ -153,14 +152,12 @@ bot.onText(/[\/\.]help/, async (msg) => {
 
         `<b>📊 REPORTES DE RENDIMIENTO</b>\n` +
         `• <code>/top viral</code> ➔ Ver mejores ganancias en lista Viral.\n` +
-        `• <code>/top breakout</code> ➔ Ver mejores ganancias en Breakout.\n` +
         `• <code>/top recovery</code> ➔ Ver mejores ganancias en Recovery.\n` +
         `• <code>/top global</code> ➔ Ver mejores ganancias de todo el bot.\n` +
         `• <code>/dashboard</code> ➔ Fuerza el envío o actualización del Dashboard.\n\n` +
 
         `<b>🧹 LIMPIEZA VISUAL (No borra datos)</b>\n` +
         `• <code>/clean viral</code> ➔ Elimina el mensaje de lista Viral del chat.\n` +
-        `• <code>/clean breakout</code> ➔ Elimina el mensaje de lista Breakout.\n` +
         `• <code>/clean recovery</code> ➔ Elimina el mensaje de lista Recovery.\n` +
         `• <code>/clean dashboard</code> ➔ Elimina el mensaje del Dashboard.\n\n` +
 
@@ -197,12 +194,12 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
 
 bot.onText(/[\/\.]nuke/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
-    const idsToDelete = [dashboardMsgId, liveListIds.viral, liveListIds.breakout, liveListIds.recovery].filter(id => id);
+    const idsToDelete = [dashboardMsgId, liveListIds.viral, liveListIds.recovery].filter(id => id);
     for (const id of idsToDelete) { try { await bot.deleteMessage(DESTINATION_ID, id); } catch(e) {} }
 
     activeTokens = {};
     dashboardMsgId = null;
-    liveListIds = { recovery: null, breakout: null, viral: null };
+    liveListIds = { recovery: null, viral: null };
     saveDB();
     log("Base de datos PURGADA TOTALMENTE por comando /nuke", "DELETE");
     await bot.sendMessage(DESTINATION_ID, "☢️ **BASE DE DATOS ELIMINADA**", { parse_mode: 'Markdown' });
@@ -230,10 +227,9 @@ bot.onText(/[\/\.]top (.+)/, async (msg, match) => {
     let title = "";
 
     if (type === 'viral') { tokensFilter = allTokens.filter(t => t.mentions.length >= 3); title = "🔥 TOP VIRAL"; }
-    else if (type === 'breakout') { tokensFilter = allTokens.filter(t => t.breakoutCount >= 2); title = "🚀 TOP BREAKOUT"; }
     else if (type === 'recovery') { tokensFilter = allTokens.filter(t => t.lastRecoveryTime > 0); title = "♻️ TOP RECOVERY"; }
     else if (type === 'global' || type === 'dashboard') { tokensFilter = allTokens; title = "📊 TOP GLOBAL"; }
-    else return bot.sendMessage(DESTINATION_ID, "❌ Tipos: viral, breakout, recovery, global");
+    else return bot.sendMessage(DESTINATION_ID, "❌ Tipos: viral, recovery, global");
 
     const winners = tokensFilter.filter(t => t.currentFdv > t.entryFdv);
     if (winners.length === 0) return bot.sendMessage(DESTINATION_ID, `📉 Sin ganancias en <b>${type}</b>.`, { parse_mode: 'HTML' });
@@ -360,8 +356,6 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
             const growthB = (b.currentFdv / entryFdvB - 1) * 100;
             return growthB - growthA; // Mayor ganancia primero
         });
-    } else if (type === 'breakout') {
-        tokens.sort((a, b) => b.lastBreakoutTime - a.lastBreakoutTime);
     } else if (type === 'recovery') {
         tokens.sort((a, b) => b.lastRecoveryTime - a.lastRecoveryTime);
     }
@@ -379,7 +373,6 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
         const trendIcon = parseFloat(growth) >= 0 ? '🟢' : '🔴';
         let extraInfo = "";
 
-        if (type === 'breakout') extraInfo = ` | ⚡ Hits: ${t.breakoutCount || 1}`;
         if (type === 'recovery') extraInfo = ` | ♻️ Dip Eater`;
 
         // LÓGICA DE SIMULACIÓN VISUAL
@@ -463,7 +456,6 @@ async function updateTracking() {
     const now = Date.now();
 
     let recoveryList = [];
-    let breakoutList = [];
     let viralList = [];
 
     for (const chunk of chunks) {
@@ -488,9 +480,7 @@ async function updateTracking() {
             // Inicialización de campos
             if (!token.maxFdv) token.maxFdv = token.entryFdv;
             if (token.isDipping === undefined) token.isDipping = false;
-            if (!token.lastBreakoutTime) token.lastBreakoutTime = 0;
             if (!token.lastRecoveryTime) token.lastRecoveryTime = 0;
-            if (!token.breakoutCount) token.breakoutCount = 0; 
             if (!token.listStats) token.listStats = {}; 
 
             // 1. LÓGICA VIRAL
@@ -515,21 +505,11 @@ async function updateTracking() {
                 recoveryList.push(token);
             }
 
-            // 3. LÓGICA BREAKOUT
-            const isBreakingOutNow = currentFdv > token.maxFdv;
-            if (isBreakingOutNow) {
+            // Actualizar maxFdv para recovery logic
+            if (currentFdv > token.maxFdv) {
                 token.maxFdv = currentFdv;
                 token.isDipping = false;
-                token.lastBreakoutTime = now;
-                token.breakoutCount += 1; 
                 dbChanged = true;
-            }
-
-            if (token.breakoutCount >= 2) {
-                 if (isBreakingOutNow || (now - token.lastBreakoutTime) < LIST_HOLD_TIME) {
-                     updateSimulationLogic(token, 'breakout', currentPrice, currentFdv);
-                     breakoutList.push(token);
-                 }
             }
 
             token.currentFdv = currentFdv;
@@ -541,7 +521,6 @@ async function updateTracking() {
     if (dbChanged) saveDB();
 
     await updateLiveListMessage('viral', viralList, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
-    await updateLiveListMessage('breakout', breakoutList, "NUEVOS MÁXIMOS 🚀 (Min 2 Hits)", "🚀");
     await updateLiveListMessage('recovery', recoveryList, "RECUPERANDO / DIP EATER ♻️", "♻️");
     await updateDashboardMessage();
 }
@@ -641,8 +620,8 @@ async function updateDashboardMessage() {
                     activeTokens[ca] = {
                         name: data.name, symbol: data.symbol, ca: ca, url: data.url,
                         entryFdv: data.fdv, entryPrice: data.price, currentFdv: data.fdv,
-                        maxFdv: data.fdv, isDipping: false, breakoutCount: 0,
-                        lastBreakoutTime: 0, lastRecoveryTime: 0,
+                        maxFdv: data.fdv, isDipping: false,
+                        lastRecoveryTime: 0,
                         listStats: {}, 
                         mentions: [mentionData], detectedAt: Date.now()
                     };
