@@ -477,10 +477,34 @@ bot.onText(/[\/\.]stats/, async (msg) => {
 bot.onText(/[\/\.]dashboard/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     
-    // Forzar recreación del dashboard
-    dashboardMsgId = null;
-    await updateDashboardMessage();
-    log("Dashboard forzado por comando /dashboard", "INFO");
+    try {
+        // Forzar recreación del dashboard
+        dashboardMsgId = null;
+        saveDB();
+        
+        // Esperar un poco antes de recrear
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        await updateDashboardMessage();
+        
+        const tokenCount = Object.keys(activeTokens).length;
+        const winnersCount = Object.values(activeTokens).filter(t => t.currentFdv > t.entryFdv).length;
+        
+        await safeBotAction(() => 
+            bot.sendMessage(DESTINATION_ID, `✅ **Dashboard recreado**\n📊 ${tokenCount} tokens tracked | 📈 ${winnersCount} ganadores`, { parse_mode: 'Markdown' })
+        );
+        
+        log("Dashboard recreado por comando", "INFO");
+    } catch (error) {
+        log(`Error en /dashboard: ${error.message}`, "ERROR");
+        try {
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, "❌ Error al recrear Dashboard")
+            );
+        } catch (e) {
+            // Ignorar errores secundarios
+        }
+    }
 });
 
 // COMANDO: FORZAR MENSAJE EN VIVO VIRAL
@@ -525,23 +549,43 @@ bot.onText(/[\/\.]live_viral/, async (msg) => {
 bot.onText(/[\/\.]live_recovery/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     
-    const recoveryTokens = Object.values(activeTokens).filter(t => {
-        const now = Date.now();
-        return t.lastRecoveryTime > 0 && (
-            (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
-            (now - t.lastRecoveryTime) < LIST_HOLD_TIME
-        );
-    });
-    
-    // Forzar recreación del mensaje en vivo
-    liveListIds.recovery = null;
-    await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
-    log("Lista Recovery en vivo forzada por comando /live_recovery", "INFO");
-    
-    if (recoveryTokens.length === 0) {
-        await bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Recovery recreada (vacía - no hay tokens en recuperación)");
-    } else {
-        await bot.sendMessage(DESTINATION_ID, `✅ Lista Recovery en vivo recreada con ${recoveryTokens.length} tokens`);
+    try {
+        const recoveryTokens = Object.values(activeTokens).filter(t => {
+            const now = Date.now();
+            return t.lastRecoveryTime > 0 && (
+                (t.isDipping && t.currentFdv >= (t.maxFdv * 0.90) && t.currentFdv < t.maxFdv) ||
+                (now - t.lastRecoveryTime) < LIST_HOLD_TIME
+            );
+        });
+        
+        // Forzar recreación del mensaje en vivo
+        liveListIds.recovery = null;
+        saveDB();
+        
+        // Esperar un poco antes de recrear
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        if (recoveryTokens.length === 0) {
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Recovery vacía - no hay tokens en recuperación")
+            );
+        } else {
+            await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, `✅ Lista Recovery recreada con ${recoveryTokens.length} tokens`)
+            );
+        }
+        
+        log("Lista Recovery recreada por comando", "INFO");
+    } catch (error) {
+        log(`Error en /live_recovery: ${error.message}`, "ERROR");
+        try {
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, "❌ Error al recrear lista Recovery")
+            );
+        } catch (e) {
+            // Ignorar errores secundarios
+        }
     }
 });
 
@@ -576,8 +620,15 @@ bot.onText(/[\/\.]live_all/, async (msg) => {
         saveDB();
         log("Todas las listas en vivo recreadas por comando /live_all", "INFO");
         
+        // Mensaje más informativo
+        let confirmMsg = "✅ **LISTAS RECREADAS**\n\n";
+        confirmMsg += `🔥 **Viral:** ${viralTokens.length} tokens\n`;
+        confirmMsg += `♻️ **Recovery:** ${recoveryTokens.length} tokens\n`;
+        confirmMsg += `📊 **Dashboard:** Actualizado\n\n`;
+        confirmMsg += `⚡ Todas las listas están ahora en vivo`;
+        
         await safeBotAction(() => 
-            bot.sendMessage(DESTINATION_ID, "✅ Todas las listas en vivo han sido recreadas")
+            bot.sendMessage(DESTINATION_ID, confirmMsg, { parse_mode: 'Markdown' })
         );
     } catch (error) {
         log(`Error en /live_all: ${error.message}`, "ERROR");
@@ -869,7 +920,23 @@ async function updateDashboardMessage() {
         .sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv))
         .slice(0, 5);
 
-    if (sortedTokens.length === 0 && !dashboardMsgId) return;
+    if (sortedTokens.length === 0 && !dashboardMsgId) {
+        // Crear dashboard vacío si no existe
+        let text = "<b>📊 DASHBOARD GLOBAL - TOP 5</b>\n\n";
+        text += "<i>💤 Esperando tokens con movimientos (+30%)...</i>";
+        text += `\n⚡ Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}`;
+        
+        try { 
+            const sent = await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+            ); 
+            dashboardMsgId = sent.message_id; 
+            saveDB(); 
+        } catch (e) { 
+            log(`Error creando Dashboard vacío: ${e.message}`, "ERROR"); 
+        }
+        return;
+    }
 
     let text = "<b>📊 DASHBOARD GLOBAL - TOP 5</b>\n\n";
 
