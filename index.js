@@ -86,7 +86,7 @@ const bot = new TelegramBot(BOT_TOKEN, {
 
 // Rate limiting para evitar 429 errors
 let lastBotAction = 0;
-const BOT_RATE_LIMIT = 1000; // 1 segundo entre acciones
+const BOT_RATE_LIMIT = 2000; // 2 segundos entre acciones (más conservador)
 
 async function safeBotAction(action) {
     const now = Date.now();
@@ -101,11 +101,12 @@ async function safeBotAction(action) {
         lastBotAction = Date.now();
         return result;
     } catch (error) {
-        if (error.response?.statusCode === 429) {
-            const retryAfter = parseInt(error.response.headers['retry-after']) || 5;
+        if (error.response?.statusCode === 429 || error.code === 'ETELEGRAM') {
+            const retryAfter = parseInt(error.response?.headers['retry-after']) || 10;
             log(`Rate limited, esperando ${retryAfter} segundos`, "ERROR");
             await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-            return await action();
+            // No reintentar automáticamente para evitar loops
+            throw new Error(`Rate limited - esperando ${retryAfter}s`);
         }
         throw error;
     }
@@ -127,6 +128,19 @@ http.createServer((req, res) => { res.writeHead(200); res.end('Tracker Bot OK');
 // ==========================================
 // 0. SISTEMA DE LOGS DETALLADOS (COLOMBIA)
 // ==========================================
+
+// Manejo global de errores para evitar crashes
+process.on('uncaughtException', (error) => {
+    log(`Error no capturado: ${error.message}`, "ERROR");
+    console.error('Stack trace:', error.stack);
+    // No terminar el proceso, solo logear
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    log(`Promise rechazada no manejada: ${reason}`, "ERROR");
+    // No terminar el proceso, solo logear
+});
+
 function log(message, type = "INFO") {
     const now = new Date();
     // CAMBIO: Forzamos hora colombiana (America/Bogota)
@@ -473,17 +487,37 @@ bot.onText(/[\/\.]dashboard/, async (msg) => {
 bot.onText(/[\/\.]live_viral/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     
-    const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
-    
-    // Forzar recreación del mensaje en vivo
-    liveListIds.viral = null;
-    await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
-    log("Lista Viral en vivo forzada por comando /live_viral", "INFO");
-    
-    if (viralTokens.length === 0) {
-        await bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Viral recreada (vacía - no hay tokens con 3+ menciones)");
-    } else {
-        await bot.sendMessage(DESTINATION_ID, `✅ Lista Viral en vivo recreada con ${viralTokens.length} tokens`);
+    try {
+        const viralTokens = Object.values(activeTokens).filter(t => t.mentions.length >= 3);
+        
+        // Forzar recreación del mensaje en vivo
+        liveListIds.viral = null;
+        saveDB();
+        
+        // Esperar un poco antes de recrear
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        if (viralTokens.length === 0) {
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, "ℹ️ Lista Viral vacía - no hay tokens con 3+ menciones")
+            );
+        } else {
+            await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, `✅ Lista Viral recreada con ${viralTokens.length} tokens`)
+            );
+        }
+        
+        log("Lista Viral recreada por comando", "INFO");
+    } catch (error) {
+        log(`Error en /live_viral: ${error.message}`, "ERROR");
+        try {
+            await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, "❌ Error al recrear lista Viral")
+            );
+        } catch (e) {
+            // Ignorar errores secundarios
+        }
     }
 });
 
@@ -722,22 +756,30 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
                 disable_web_page_preview: true
             });
         } catch (e) {
-            if (e.message.includes("not found")) {
-                const sent = await safeBotAction(() => 
-                    bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
-                );
-                liveListIds[type] = sent.message_id;
+            if (e.message.includes("not found") || e.message.includes("message to edit not found")) {
+                // Mensaje fue borrado, marcar para recrear en próxima actualización
+                liveListIds[type] = null;
                 saveDB();
-                log(`Mensaje lista [${type}] recreado tras borrado manual.`, "LIVE");
+                log(`Mensaje [${type}] no encontrado, será recreado.`, "INFO");
+            } else if (e.code === 'ETELEGRAM' || e.response?.statusCode === 429) {
+                // Rate limited, ignorar silenciosamente
+                log(`Rate limited [${type}], reintentando después.`, "INFO");
+            } else {
+                log(`Error editando [${type}]: ${e.message}`, "ERROR");
             }
         }
     } else {
-        const sent = await safeBotAction(() => 
-            bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
-        );
-        liveListIds[type] = sent.message_id;
-        saveDB();
-        log(`Nuevo mensaje de lista creado: [${type}]`, "LIVE");
+        try {
+            const sent = await safeBotAction(() => 
+                bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
+            );
+            liveListIds[type] = sent.message_id;
+            saveDB();
+            log(`Nuevo mensaje [${type}] creado.`, "LIVE");
+        } catch (e) {
+            log(`Error creando [${type}]: ${e.message}`, "ERROR");
+            // No hacer nada más, se reintentará en la próxima actualización
+        }
     }
 }
 
