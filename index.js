@@ -314,7 +314,7 @@ function updateSimulationLogic(token, type, currentPrice, currentFdv) {
             simEntryTime: null,
             simEntryFdv: null
         };
-        log(`Nuevo ingreso a Lista [${type.toUpperCase()}]: ${token.symbol} | Precio: $${currentPrice}`, "LIVE");
+        log(`Nuevo ingreso a Lista [${type.toUpperCase()}]: ${token.symbol} | MC Entrada: ${formatCurrency(currentFdv)}`, "LIVE");
     }
 
     const stats = token.listStats[type];
@@ -363,7 +363,10 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
     text += `<i>Top 20 Activos | Inv. Sim: $${simulationAmount}</i>\n\n`;
 
     displayTokens.forEach((t, index) => {
-        const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
+        // Usar el MC de entrada específico de esta lista, no el global
+        const stats = t.listStats ? t.listStats[type] : null;
+        const listEntryFdv = stats ? stats.entryFdv : t.entryFdv; // Fallback al global si no hay stats
+        const growth = ((t.currentFdv / listEntryFdv - 1) * 100).toFixed(0);
         const trendIcon = parseFloat(growth) >= 0 ? '🟢' : '🔴';
         let extraInfo = "";
 
@@ -399,7 +402,7 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
 
             text += `${index + 1}. ${trendIcon} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
             text += `   🕒 <b>Hora Entrada:</b> ${entryTimeStr}\n`;
-            text += `   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
+            text += `   💰 Entry: ${formatCurrency(listEntryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
             text += `   ${simText}\n`; 
             text += `   🗣 <b>${t.mentions.length} Calls</b>${extraInfo} | 🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> • <a href="https://mevx.io/solana/${t.ca}">MEVX</a>\n\n`;
         } else {
