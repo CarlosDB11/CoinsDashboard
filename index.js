@@ -257,7 +257,8 @@ bot.onText(/[\/\.]help/, async (msg) => {
 
         `<b>🗑️ GESTIÓN DE DATOS (Borra DB)</b>\n` +
         `• <code>/purge 3</code> ➔ Elimina de la memoria tokens con más de 3 días de antigüedad.\n` +
-        `• <code>/nuke</code> ➔ ☢️ <b>PELIGRO:</b> Borra TODA la base de datos y resetea el bot.`;
+        `• <code>/nuke</code> ➔ ☢️ <b>PELIGRO:</b> Borra TODA la base de datos y resetea el bot.\n` +
+        `• <code>/debug</code> ➔ 🔧 Ver información técnica e IDs de mensajes.`;
 
     await bot.sendMessage(DESTINATION_ID, helpText, { parse_mode: 'HTML' });
 });
@@ -527,6 +528,8 @@ bot.onText(/[\/\.]live_viral/, async (msg) => {
             );
         } else {
             await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
+            // Esperar a que se guarde el ID
+            await new Promise(resolve => setTimeout(resolve, 500));
             await safeBotAction(() => 
                 bot.sendMessage(DESTINATION_ID, `✅ Lista Viral recreada con ${viralTokens.length} tokens`)
             );
@@ -571,6 +574,8 @@ bot.onText(/[\/\.]live_recovery/, async (msg) => {
             );
         } else {
             await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
+            // Esperar a que se guarde el ID
+            await new Promise(resolve => setTimeout(resolve, 500));
             await safeBotAction(() => 
                 bot.sendMessage(DESTINATION_ID, `✅ Lista Recovery recreada con ${recoveryTokens.length} tokens`)
             );
@@ -610,12 +615,13 @@ bot.onText(/[\/\.]live_all/, async (msg) => {
         });
         
         await updateLiveListMessage('viral', viralTokens, "VIRAL / HOT 🔥 (3+ Calls)", "🔥");
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 segundos de delay
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 segundos de delay
         
         await updateLiveListMessage('recovery', recoveryTokens, "RECUPERANDO / DIP EATER ♻️", "♻️");
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 segundos de delay
+        await new Promise(resolve => setTimeout(resolve, 3000)); // 3 segundos de delay
         
         await updateDashboardMessage();
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 segundo final
         
         saveDB();
         log("Todas las listas en vivo recreadas por comando /live_all", "INFO");
@@ -636,6 +642,23 @@ bot.onText(/[\/\.]live_all/, async (msg) => {
             bot.sendMessage(DESTINATION_ID, "❌ Error al recrear las listas. Intenta de nuevo en unos segundos.")
         );
     }
+});
+
+// COMANDO: DEBUG - Ver IDs de mensajes
+bot.onText(/[\/\.]debug/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    
+    let debugText = "🔧 **DEBUG INFO**\n\n";
+    debugText += `📊 **Dashboard ID:** ${dashboardMsgId || 'null'}\n`;
+    debugText += `🔥 **Viral ID:** ${liveListIds.viral || 'null'}\n`;
+    debugText += `♻️ **Recovery ID:** ${liveListIds.recovery || 'null'}\n\n`;
+    debugText += `📈 **Tokens tracked:** ${Object.keys(activeTokens).length}\n`;
+    debugText += `🎯 **Viral tokens:** ${Object.values(activeTokens).filter(t => t.mentions.length >= 3).length}\n`;
+    debugText += `♻️ **Recovery tokens:** ${Object.values(activeTokens).filter(t => t.lastRecoveryTime > 0).length}`;
+    
+    await safeBotAction(() => 
+        bot.sendMessage(DESTINATION_ID, debugText, { parse_mode: 'Markdown' })
+    );
 });
 
 // ==========================================
@@ -824,9 +847,13 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
             const sent = await safeBotAction(() => 
                 bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
             );
-            liveListIds[type] = sent.message_id;
-            saveDB();
-            log(`Nuevo mensaje [${type}] creado.`, "LIVE");
+            if (sent && sent.message_id) {
+                liveListIds[type] = sent.message_id;
+                saveDB();
+                log(`Nuevo mensaje [${type}] creado con ID: ${sent.message_id}`, "LIVE");
+            } else {
+                log(`Error: No se pudo obtener ID del mensaje [${type}]`, "ERROR");
+            }
         } catch (e) {
             log(`Error creando [${type}]: ${e.message}`, "ERROR");
             // No hacer nada más, se reintentará en la próxima actualización
@@ -930,8 +957,11 @@ async function updateDashboardMessage() {
             const sent = await safeBotAction(() => 
                 bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true })
             ); 
-            dashboardMsgId = sent.message_id; 
-            saveDB(); 
+            if (sent && sent.message_id) {
+                dashboardMsgId = sent.message_id; 
+                saveDB(); 
+                log(`Dashboard vacío creado con ID: ${sent.message_id}`, "LIVE");
+            }
         } catch (e) { 
             log(`Error creando Dashboard vacío: ${e.message}`, "ERROR"); 
         }
