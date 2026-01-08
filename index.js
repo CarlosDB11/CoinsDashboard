@@ -531,11 +531,11 @@ async function updateDashboardMessage() {
     const sortedTokens = Object.values(activeTokens)
         .filter(t => (t.currentFdv / t.entryFdv) >= MIN_GROWTH_SHOW)
         .sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv))
-        .slice(0, 15);
+        .slice(0, 5);
 
     if (sortedTokens.length === 0 && !dashboardMsgId) return;
 
-    let text = "<b>📊 DASHBOARD GLOBAL</b>\n\n";
+    let text = "<b>📊 DASHBOARD GLOBAL - TOP 5</b>\n\n";
 
     if (sortedTokens.length === 0) {
         text += "<i>💤 Esperando movimientos (+30%)...</i>";
