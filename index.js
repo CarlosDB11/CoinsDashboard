@@ -17,7 +17,7 @@ const DESTINATION_ID = Number(process.env.DESTINATION_ID);
 const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monitor", "solhousesignal", "nevadielegends", "PFsafeLaunch", "ReVoX_Academy", "dacostest", "pfultimate", "GemDynasty", "Bot_NovaX", "CCMFreeSignal", "KropClub", "ciphercallsfree", "solanagemsradar", "solana_whales_signal", "pingcalls", "gem_tools_calls", "SAVANNAHCALLS", "athenadefai", "Bigbabywhale", "SavannahSOL", "A3CallChan", "PEPE_Calls28", "gems_calls100x", "ai_dip_caller", "KingdomOfDegenCalls", "fttrenches_volsm", "loganpump", "bananaTrendingBot"];
 
 // --- CONFIGURACIÓN DE TRACKING ---
-const MIN_MC_ENTRY = 20000;     
+const MIN_MC_ENTRY = 10000;     
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
 const UPDATE_INTERVAL = 10000;  
