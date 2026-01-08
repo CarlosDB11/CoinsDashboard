@@ -24,9 +24,23 @@ const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monito
 const MIN_MC_ENTRY = 10000;     
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
-const UPDATE_INTERVAL = 10000;  
+const UPDATE_INTERVAL = 30000;  // Aumentado a 30s para evitar rate limiting
 const MIN_GROWTH_SHOW = 1.30;   
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
+
+// --- RATE LIMITING ---
+let lastMessageUpdate = {
+    viral: 0,
+    recovery: 0,
+    dashboard: 0
+};
+const MESSAGE_UPDATE_COOLDOWN = 20000; // 20 segundos entre actualizaciones de mensaje
+let telegramRateLimited = false;
+let rateLimitEndTime = 0; 
+
+// Rate limiting configuration
+const RATE_LIMIT_DELAY = 1000; // 1 segundo entre requests
+let lastApiCall = 0; 
 
 // --- RUTA SEGURA PARA DATOS ---
 const DATA_FOLDER = './data'; // Nombre de la carpeta "caja fuerte"
@@ -111,7 +125,61 @@ function escapeHtml(text) {
 }
 
 // ==========================================
-// 1. GESTIÓN DE BASE DE DATOS
+// 1. GESTIÓN DE RATE LIMITING
+// ==========================================
+function handleTelegramError(error, context = "") {
+    if (error.message && error.message.includes('429')) {
+        const retryAfterMatch = error.message.match(/retry after (\d+)/);
+        if (retryAfterMatch) {
+            const retryAfter = parseInt(retryAfterMatch[1]);
+            telegramRateLimited = true;
+            rateLimitEndTime = Date.now() + (retryAfter * 1000);
+            log(`Rate Limited! Esperando ${retryAfter}s antes de continuar. Context: ${context}`, "ERROR");
+            return true;
+        }
+    }
+    return false;
+}
+
+function canSendMessage(type) {
+    const now = Date.now();
+    
+    // Verificar si estamos en rate limit global
+    if (telegramRateLimited && now < rateLimitEndTime) {
+        return false;
+    } else if (telegramRateLimited && now >= rateLimitEndTime) {
+        telegramRateLimited = false;
+        log("Rate limit terminado, reanudando operaciones", "INFO");
+    }
+    
+    // Verificar cooldown específico del tipo de mensaje
+    if (now - lastMessageUpdate[type] < MESSAGE_UPDATE_COOLDOWN) {
+        return false;
+    }
+    
+    return true;
+}
+
+async function safeTelegramCall(asyncFunction, context = "", type = "general") {
+    try {
+        if (!canSendMessage(type)) {
+            return null;
+        }
+        
+        const result = await asyncFunction();
+        lastMessageUpdate[type] = Date.now();
+        return result;
+    } catch (error) {
+        if (handleTelegramError(error, context)) {
+            return null;
+        }
+        log(`Error en ${context}: ${error.message}`, "ERROR");
+        return null;
+    }
+}
+
+// ==========================================
+// 2. GESTIÓN DE BASE DE DATOS
 // ==========================================
 function loadDB() {
     if (fs.existsSync(DB_FILE)) {
@@ -144,7 +212,7 @@ function saveDB() {
 }
 
 // ==========================================
-// 2. COMANDOS DEL BOT
+// 3. COMANDOS DEL BOT
 // ==========================================
 
 // COMANDO: AYUDA (LISTA DE COMANDOS)
@@ -172,7 +240,9 @@ bot.onText(/[\/\.]help/, async (msg) => {
         `• <code>/purge 3</code> ➔ Elimina de la memoria tokens con más de 3 días de antigüedad.\n` +
         `• <code>/nuke</code> ➔ ☢️ <b>PELIGRO:</b> Borra TODA la base de datos y resetea el bot.`;
 
-    await bot.sendMessage(DESTINATION_ID, helpText, { parse_mode: 'HTML' });
+    await safeTelegramCall(async () => {
+        return await bot.sendMessage(DESTINATION_ID, helpText, { parse_mode: 'HTML' });
+    }, 'help-command', 'general');
 });
 
 // COMANDO: CAMBIAR TIEMPO DE SIMULACIÓN
@@ -184,7 +254,9 @@ bot.onText(/[\/\.]settime (\d+)/, async (msg, match) => {
     simulationTimeMinutes = minutes;
     saveDB();
     log(`Configuración actualizada: Tiempo de simulación cambiado a ${minutes} min`, "CONFIG");
-    await bot.sendMessage(DESTINATION_ID, `✅ <b>Tiempo de simulación actualizado:</b> ${minutes} Minutos`, { parse_mode: 'HTML' });
+    await safeTelegramCall(async () => {
+        return await bot.sendMessage(DESTINATION_ID, `✅ <b>Tiempo de simulación actualizado:</b> ${minutes} Minutos`, { parse_mode: 'HTML' });
+    }, 'settime-command', 'general');
 });
 
 // COMANDO: CAMBIAR INVERSIÓN SIMULADA
@@ -196,7 +268,9 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
     simulationAmount = amount;
     saveDB();
     log(`Configuración actualizada: Inversión simulada cambiada a $${amount}`, "CONFIG");
-    await bot.sendMessage(DESTINATION_ID, `✅ <b>Inversión simulada actualizada:</b> $${amount} USD`, { parse_mode: 'HTML' });
+    await safeTelegramCall(async () => {
+        return await bot.sendMessage(DESTINATION_ID, `✅ <b>Inversión simulada actualizada:</b> $${amount} USD`, { parse_mode: 'HTML' });
+    }, 'setinvest-command', 'general');
 });
 
 bot.onText(/[\/\.]nuke/, async (msg) => {
@@ -274,10 +348,23 @@ bot.onText(/[\/\.]purge (\d+)/, async (msg, match) => {
 });
 
 // ==========================================
-// 3. API DEXSCREENER
+// 3. API DEXSCREENER CON RATE LIMITING
 // ==========================================
+
+// Función para esperar y respetar rate limits
+async function waitForRateLimit() {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCall;
+    if (timeSinceLastCall < RATE_LIMIT_DELAY) {
+        const waitTime = RATE_LIMIT_DELAY - timeSinceLastCall;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    lastApiCall = Date.now();
+}
+
 async function getBatchDexData(addressesArray) {
     try {
+        await waitForRateLimit();
         const url = `https://api.dexscreener.com/latest/dex/tokens/${addressesArray.join(',')}`;
         const res = await axios.get(url);
         return (res.data && res.data.pairs) ? res.data.pairs.filter(p => p.chainId === 'solana') : [];
@@ -286,8 +373,10 @@ async function getBatchDexData(addressesArray) {
         return []; 
     }
 }
+
 async function getSingleDexData(address) {
     try {
+        await waitForRateLimit();
         const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
         if (!res.data?.pairs?.length) return null;
         const pair = res.data.pairs.find(p => p.chainId === 'solana');
@@ -338,15 +427,62 @@ function updateSimulationLogic(token, type, currentPrice, currentFdv) {
     }
 }
 
+// Función para manejar errores de Telegram con retry
+async function sendTelegramMessage(text, options = {}) {
+    const maxRetries = 3;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await bot.sendMessage(DESTINATION_ID, text, options);
+        } catch (error) {
+            if (error.message.includes('429')) {
+                const retryAfter = parseInt(error.message.match(/retry after (\d+)/)?.[1] || '5');
+                log(`Rate limit hit, esperando ${retryAfter} segundos...`, "INFO");
+                await new Promise(resolve => setTimeout(resolve, (retryAfter + 1) * 1000));
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
+async function editTelegramMessage(text, messageId, options = {}) {
+    const maxRetries = 3;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            return await bot.editMessageText(text, {
+                chat_id: DESTINATION_ID,
+                message_id: messageId,
+                ...options
+            });
+        } catch (error) {
+            if (error.message.includes('429')) {
+                const retryAfter = parseInt(error.message.match(/retry after (\d+)/)?.[1] || '5');
+                log(`Rate limit hit, esperando ${retryAfter} segundos...`, "INFO");
+                await new Promise(resolve => setTimeout(resolve, (retryAfter + 1) * 1000));
+                continue;
+            }
+            if (error.message.includes("not found")) {
+                return null; // Mensaje fue borrado
+            }
+            throw error;
+        }
+    }
+}
+
 async function updateLiveListMessage(type, tokens, title, emoji) {
+    // Verificar rate limiting antes de proceder
+    if (!canSendMessage(type)) {
+        return;
+    }
+
     if (tokens.length === 0) {
         if (liveListIds[type]) {
-            try { 
-                await bot.deleteMessage(DESTINATION_ID, liveListIds[type]); 
-                liveListIds[type] = null; 
-                saveDB(); 
+            await safeTelegramCall(async () => {
+                await bot.deleteMessage(DESTINATION_ID, liveListIds[type]);
+                liveListIds[type] = null;
+                saveDB();
                 log(`Lista [${type}] vaciada y borrada del chat.`, "DELETE");
-            } catch (e) { liveListIds[type] = null; }
+            }, `delete-${type}`, type);
         }
         return;
     }
@@ -429,26 +565,40 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
     text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
 
     if (liveListIds[type]) {
-        try {
-            await bot.editMessageText(text, {
+        await safeTelegramCall(async () => {
+            return await bot.editMessageText(text, {
                 chat_id: DESTINATION_ID,
                 message_id: liveListIds[type],
                 parse_mode: 'HTML',
                 disable_web_page_preview: true
             });
-        } catch (e) {
-            if (e.message.includes("not found")) {
-                const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
-                liveListIds[type] = sent.message_id;
-                saveDB();
-                log(`Mensaje lista [${type}] recreado tras borrado manual.`, "LIVE");
+        }, `edit-${type}`, type).catch(async (e) => {
+            if (e && e.message && e.message.includes("not found")) {
+                const sent = await safeTelegramCall(async () => {
+                    return await bot.sendMessage(DESTINATION_ID, text, { 
+                        parse_mode: 'HTML', 
+                        disable_web_page_preview: true 
+                    });
+                }, `recreate-${type}`, type);
+                if (sent) {
+                    liveListIds[type] = sent.message_id;
+                    saveDB();
+                    log(`Mensaje lista [${type}] recreado tras borrado manual.`, "LIVE");
+                }
             }
-        }
+        });
     } else {
-        const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true });
-        liveListIds[type] = sent.message_id;
-        saveDB();
-        log(`Nuevo mensaje de lista creado: [${type}]`, "LIVE");
+        const sent = await safeTelegramCall(async () => {
+            return await bot.sendMessage(DESTINATION_ID, text, { 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true 
+            });
+        }, `create-${type}`, type);
+        if (sent) {
+            liveListIds[type] = sent.message_id;
+            saveDB();
+            log(`Nuevo mensaje de lista creado: [${type}]`, "LIVE");
+        }
     }
 }
 
@@ -533,6 +683,11 @@ async function updateTracking() {
 }
 
 async function updateDashboardMessage() {
+    // Verificar rate limiting antes de proceder
+    if (!canSendMessage('dashboard')) {
+        return;
+    }
+
     const sortedTokens = Object.values(activeTokens)
         .filter(t => (t.currentFdv / t.entryFdv) >= MIN_GROWTH_SHOW)
         .sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv))
@@ -562,13 +717,25 @@ async function updateDashboardMessage() {
     text += `\n⚡ Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}`;
 
     if (!dashboardMsgId) {
-        try { 
-            const sent = await bot.sendMessage(DESTINATION_ID, text, { parse_mode: 'HTML', disable_web_page_preview: true }); 
-            dashboardMsgId = sent.message_id; 
-            saveDB(); 
-        } catch (e) { log(`Error creando Dashboard: ${e.message}`, "ERROR"); }
+        const sent = await safeTelegramCall(async () => {
+            return await bot.sendMessage(DESTINATION_ID, text, { 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true 
+            });
+        }, 'create-dashboard', 'dashboard');
+        if (sent) {
+            dashboardMsgId = sent.message_id;
+            saveDB();
+        }
     } else {
-        try { await bot.editMessageText(text, { chat_id: DESTINATION_ID, message_id: dashboardMsgId, parse_mode: 'HTML', disable_web_page_preview: true }); } catch (e) {}
+        await safeTelegramCall(async () => {
+            return await bot.editMessageText(text, { 
+                chat_id: DESTINATION_ID, 
+                message_id: dashboardMsgId, 
+                parse_mode: 'HTML', 
+                disable_web_page_preview: true 
+            });
+        }, 'edit-dashboard', 'dashboard');
     }
 }
 
