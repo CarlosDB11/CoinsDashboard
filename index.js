@@ -7,6 +7,30 @@ const axios = require('axios');
 const http = require('http');
 const fs = require('fs');
 
+// Suprimir logs verbosos de librerías
+process.env.NTBA_FIX_319 = 1;
+process.env.NTBA_FIX_350 = 1;
+
+// Configurar axios para logs más limpios
+axios.defaults.timeout = 10000;
+axios.interceptors.request.use(
+    config => config,
+    error => {
+        log(`Request error: ${error.message}`, "ERROR");
+        return Promise.reject(error);
+    }
+);
+
+axios.interceptors.response.use(
+    response => response,
+    error => {
+        if (error.code !== 'ECONNABORTED') {
+            log(`Response error: ${error.message}`, "ERROR");
+        }
+        return Promise.reject(error);
+    }
+);
+
 // --- CONFIGURACIÓN Y SECRETOS ---
 const API_ID = Number(process.env.API_ID);
 const API_HASH = process.env.API_HASH;
@@ -50,7 +74,23 @@ let liveListIds = {
 };
 
 // --- INICIALIZAR BOT ---
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(BOT_TOKEN, { 
+    polling: true,
+    request: {
+        agentOptions: {
+            keepAlive: true,
+            family: 4
+        }
+    }
+});
+
+// Reducir logs verbosos del bot
+bot.on('polling_error', (error) => {
+    log(`Polling error: ${error.message}`, "ERROR");
+});
+
+// Suprimir logs excesivos de request
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '1';
 
 // --- SERVIDOR WEB ---
 http.createServer((req, res) => { res.writeHead(200); res.end('Tracker Bot OK'); }).listen(3000);
@@ -476,23 +516,28 @@ bot.onText(/[\/\.]live_all/, async (msg) => {
 async function getBatchDexData(addressesArray) {
     try {
         const url = `https://api.dexscreener.com/latest/dex/tokens/${addressesArray.join(',')}`;
-        const res = await axios.get(url);
+        const res = await axios.get(url, { timeout: 8000 });
         return (res.data && res.data.pairs) ? res.data.pairs.filter(p => p.chainId === 'solana') : [];
     } catch (e) { 
-        log(`Error DexScreener Batch: ${e.message}`, "ERROR");
+        if (e.code !== 'ECONNABORTED') {
+            log(`Error DexScreener Batch: ${e.message}`, "ERROR");
+        }
         return []; 
     }
 }
+
 async function getSingleDexData(address) {
     try {
-        const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+        const res = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${address}`, { timeout: 8000 });
         if (!res.data?.pairs?.length) return null;
         const pair = res.data.pairs.find(p => p.chainId === 'solana');
         return pair ? { 
             name: pair.baseToken.name, symbol: pair.baseToken.symbol, price: parseFloat(pair.priceUsd), fdv: pair.fdv, url: pair.url 
         } : null;
     } catch (e) { 
-        log(`Error DexScreener Single: ${e.message}`, "ERROR");
+        if (e.code !== 'ECONNABORTED') {
+            log(`Error DexScreener Single: ${e.message}`, "ERROR");
+        }
         return null; 
     }
 }
