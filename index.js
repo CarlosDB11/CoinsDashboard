@@ -57,27 +57,21 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 http.createServer((req, res) => { res.writeHead(200); res.end('Tracker Bot OK'); }).listen(3000);
 
 // ==========================================
-// 0. SISTEMA DE LOGS DETALLADOS (RESTAURADO)
+// 0. SISTEMA DE LOGS DETALLADOS (COLOMBIA)
 // ==========================================
 function log(message, type = "INFO") {
     const now = new Date();
-    // Formato: [DD/MM/YYYY HH:mm:ss]
-    const timestamp = now.toLocaleString('es-ES', { 
+    // CAMBIO: Forzamos hora colombiana (America/Bogota)
+    const timestamp = now.toLocaleString('es-CO', { 
+        timeZone: 'America/Bogota',
         day: '2-digit', month: '2-digit', year: 'numeric', 
         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false 
     });
 
     const icons = {
-        "INFO": "ℹ️",
-        "CAPTURE": "🎯",
-        "ALERT": "🚨",
-        "LIVE": "📡",
-        "IGNORE": "🚫",
-        "ERROR": "❌",
-        "DELETE": "🗑️",
-        "CONFIG": "⚙️"
+        "INFO": "ℹ️", "CAPTURE": "🎯", "ALERT": "🚨", "LIVE": "📡",
+        "IGNORE": "🚫", "ERROR": "❌", "DELETE": "🗑️", "CONFIG": "⚙️"
     };
-
     const icon = icons[type] || "";
     console.log(`[${timestamp}] ${icon} [${type}] ${message}`);
 }
@@ -86,22 +80,23 @@ function formatCurrency(num) {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
 }
 
-// Fecha corta: OCT 21 14:30
+// CAMBIO: Función reescrita para usar la zona horaria correcta
 function getShortDate(timestamp) {
     if (!timestamp) return "-";
-    const date = new Date(timestamp);
-    const months = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
-    const month = months[date.getMonth()];
-    const day = date.getDate().toString().padStart(2, '0');
-    const hours = date.getHours().toString().padStart(2, '0');
-    const mins = date.getMinutes().toString().padStart(2, '0');
-    return `${month} ${day} ${hours}:${mins}`;
+    const dateStr = new Date(timestamp).toLocaleString('es-CO', {
+        timeZone: 'America/Bogota',
+        month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+    });
+    return dateStr.toUpperCase().replace('.', '');
 }
 
-// Solo Hora: 14:30:05
+// CAMBIO: Función reescrita para usar la zona horaria correcta
 function getTimeOnly(timestamp) {
     if (!timestamp) return "--:--";
-    return new Date(timestamp).toLocaleTimeString('es-ES');
+    return new Date(timestamp).toLocaleTimeString('es-CO', { 
+        timeZone: 'America/Bogota', 
+        hour12: false 
+    });
 }
 
 function escapeHtml(text) {
@@ -306,7 +301,7 @@ async function getSingleDexData(address) {
 // 4. LÓGICA CENTRAL DE TRACKING
 // ==========================================
 
-// FUNCIÓN DE UTILIDAD PARA SIMULACIÓN (2 MINUTOS)
+// FUNCIÓN DE UTILIDAD PARA SIMULACIÓN
 function updateSimulationLogic(token, type, currentPrice, currentFdv) {
     if (!token.listStats) token.listStats = {};
     if (!token.listStats[type]) {
@@ -314,18 +309,27 @@ function updateSimulationLogic(token, type, currentPrice, currentFdv) {
             entryTime: Date.now(),       
             entryPrice: currentPrice,    
             entryFdv: currentFdv,
-            price2Min: null              
+            price2Min: null,
+            // Nuevos campos para guardar los datos exactos de la entrada simulada
+            simEntryTime: null,
+            simEntryFdv: null
         };
         log(`Nuevo ingreso a Lista [${type.toUpperCase()}]: ${token.symbol} | Precio: $${currentPrice}`, "LIVE");
     }
 
     const stats = token.listStats[type];
-    const waitTimeMs = simulationTimeMinutes * 60 * 1000; // <--- CÁLCULO DINÁMICO
+    const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
 
     if (stats.price2Min === null) {
-        // Usar waitTimeMs en lugar de 120000
+        // Si ya pasó el tiempo establecido
         if ((Date.now() - stats.entryTime) >= waitTimeMs) {
-            stats.price2Min = currentPrice; 
+            stats.price2Min = currentPrice;
+            
+            // --- NUEVO: Guardamos la hora y MC exactos de la simulación ---
+            stats.simEntryTime = Date.now();
+            stats.simEntryFdv = currentFdv;
+            // --------------------------------------------------------------
+
             log(`Simulación Activada (${type}): ${token.symbol} | Precio Fijado tras ${simulationTimeMinutes} min`, "INFO");
         }
     }
@@ -369,26 +373,32 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
         // LÓGICA DE SIMULACIÓN VISUAL
         let simText = `⏳ <i>Simulando entrada...</i>`;
         const stats = t.listStats ? t.listStats[type] : null;
-        const waitTimeMs = simulationTimeMinutes * 60 * 1000; // <--- CÁLCULO DINÁMICO
+        const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
 
         if (stats) {
             const entryTimeStr = getTimeOnly(stats.entryTime);
 
             if (stats.price2Min !== null) {
-                // Ya pasó el tiempo
+                // Cálculos de ganancia
                 const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
                 const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
                 const iconSim = profitPct >= 0 ? '📈' : '📉';
+                
+                // Formateamos los datos de la entrada simulada
+                const simTimeStr = stats.simEntryTime ? getTimeOnly(stats.simEntryTime) : "--:--";
+                const simFdvStr = stats.simEntryFdv ? formatCurrency(stats.simEntryFdv) : "N/A";
 
-                simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)`;
+                simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n`;
+                // --- NUEVA LÍNEA CON DATOS DE ENTRADA SIMULADA ---
+                simText += `   🛒 <b>Compra:</b> ${simTimeStr} | <b>MC:</b> ${simFdvStr}`;
+                
             } else {
-                // Aún contando: Usar waitTimeMs para calcular el restante
                 const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
                 simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
             }
 
             text += `${index + 1}. ${trendIcon} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
-            text += `   ⏱ <b>Listado:</b> ${entryTimeStr}\n`;
+            text += `   🕒 <b>Hora Entrada:</b> ${entryTimeStr}\n`;
             text += `   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
             text += `   ${simText}\n`; 
             text += `   🗣 <b>${t.mentions.length} Calls</b>${extraInfo} | 🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> • <a href="https://mevx.io/solana/${t.ca}">MEVX</a>\n\n`;
@@ -397,7 +407,7 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
         }
     });
 
-    text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-ES')}</i>`;
+    text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
 
     if (liveListIds[type]) {
         try {
@@ -544,7 +554,7 @@ async function updateDashboardMessage() {
             text += `   <blockquote expandable>${mentionsList}</blockquote>\n\n`;
         });
     }
-    text += `\n⚡ Actualizado: ${new Date().toLocaleTimeString('es-ES')}`;
+    text += `\n⚡ Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}`;
 
     if (!dashboardMsgId) {
         try { 
