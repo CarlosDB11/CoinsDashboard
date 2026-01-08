@@ -5,8 +5,7 @@ module.exports = {
         retryDelay: 2000,
         timeout: 15000,
         useWSS: true, // Try WebSocket Secure
-        floodSleepThreshold: 60,
-        baseLogger: 'none'
+        floodSleepThreshold: 60
     },
     bot: {
         polling: {

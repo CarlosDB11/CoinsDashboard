@@ -8,7 +8,6 @@ const http = require('http');
 const fs = require('fs');
 
 // Add TLS configuration for better connection handling
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // Only for debugging, remove in production
 const tls = require('tls');
 tls.DEFAULT_MIN_VERSION = 'TLSv1.2';
 
@@ -580,13 +579,24 @@ async function updateDashboardMessage() {
     log("Iniciando Bot Híbrido...", "INFO");
     loadDB();
     let stringSession = new StringSession("");
-    if (fs.existsSync(SESSION_FILE)) stringSession = new StringSession(fs.readFileSync(SESSION_FILE, 'utf8'));
+    
+    // Check if session file exists and handle Railway environment
+    if (fs.existsSync(SESSION_FILE)) {
+        try {
+            const sessionData = fs.readFileSync(SESSION_FILE, 'utf8');
+            stringSession = new StringSession(sessionData);
+            log("Sesión cargada desde archivo", "INFO");
+        } catch (error) {
+            log(`Error leyendo sesión: ${error.message}`, "ERROR");
+        }
+    } else {
+        log("No se encontró archivo de sesión, iniciando nueva sesión", "INFO");
+    }
     const client = new TelegramClient(stringSession, API_ID, API_HASH, { 
         connectionRetries: 5,
         retryDelay: 1000,
         timeout: 10000,
-        useWSS: false,
-        baseLogger: 'none'
+        useWSS: false
     });
 
     try {
