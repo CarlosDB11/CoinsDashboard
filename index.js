@@ -350,17 +350,26 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
 
     // ORDENAMIENTO
     if (type === 'viral') {
-        tokens.sort((a, b) => b.mentions.length - a.mentions.length);
+        // Ordenar por ganancia (growth) en lugar de por menciones
+        tokens.sort((a, b) => {
+            const statsA = a.listStats ? a.listStats[type] : null;
+            const statsB = b.listStats ? b.listStats[type] : null;
+            const entryFdvA = statsA ? statsA.entryFdv : a.entryFdv;
+            const entryFdvB = statsB ? statsB.entryFdv : b.entryFdv;
+            const growthA = (a.currentFdv / entryFdvA - 1) * 100;
+            const growthB = (b.currentFdv / entryFdvB - 1) * 100;
+            return growthB - growthA; // Mayor ganancia primero
+        });
     } else if (type === 'breakout') {
         tokens.sort((a, b) => b.lastBreakoutTime - a.lastBreakoutTime);
     } else if (type === 'recovery') {
         tokens.sort((a, b) => b.lastRecoveryTime - a.lastRecoveryTime);
     }
 
-    const displayTokens = tokens.slice(0, 20);
+    const displayTokens = type === 'viral' ? tokens.slice(0, 6) : tokens.slice(0, 20);
 
     let text = `${emoji} <b>EN VIVO: ${title}</b> ${emoji}\n`;
-    text += `<i>Top 20 Activos | Inv. Sim: $${simulationAmount}</i>\n\n`;
+    text += type === 'viral' ? `<i>Top 6 por Ganancia | Inv. Sim: $${simulationAmount}</i>\n\n` : `<i>Top 20 Activos | Inv. Sim: $${simulationAmount}</i>\n\n`;
 
     displayTokens.forEach((t, index) => {
         // Usar el MC de entrada específico de esta lista, no el global
@@ -401,9 +410,17 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
 
             text += `${index + 1}. ${trendIcon} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
             text += `   🕒 <b>Hora Entrada:</b> ${entryTimeStr}\n`;
+            // Formatear menciones como en el dashboard
+            const mentionsList = t.mentions.map(m => {
+                const timeStr = getShortDate(m.time);
+                const channelLink = m.link ? `<a href="${m.link}">${escapeHtml(m.channel)}</a>` : `<b>${escapeHtml(m.channel)}</b>`;
+                return `• ${timeStr} - ${channelLink}`;
+            }).join('\n');
+
             text += `   💰 Entry: ${formatCurrency(listEntryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
             text += `   ${simText}\n`; 
-            text += `   🗣 <b>${t.mentions.length} Calls</b>${extraInfo} | 🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> • <a href="https://mevx.io/solana/${t.ca}">MEVX</a>\n\n`;
+            text += `   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> | <a href="https://mevx.io/solana/${t.ca}">MEVX</a>${extraInfo}\n`;
+            text += `   <blockquote expandable>${mentionsList}</blockquote>\n\n`;
         } else {
             text += `${index + 1}. ${trendIcon} <b>$${escapeHtml(t.symbol)}</b>\n   Recopilando datos...\n\n`;
         }
