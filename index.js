@@ -7,6 +7,11 @@ const axios = require('axios');
 const http = require('http');
 const fs = require('fs');
 
+// Add TLS configuration for better connection handling
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // Only for debugging, remove in production
+const tls = require('tls');
+tls.DEFAULT_MIN_VERSION = 'TLSv1.2';
+
 // --- CONFIGURACIÓN Y SECRETOS ---
 const API_ID = Number(process.env.API_ID);
 const API_HASH = process.env.API_HASH;
@@ -50,7 +55,10 @@ let liveListIds = {
 };
 
 // --- INICIALIZAR BOT ---
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const railwayConfig = require('./railway.config.js');
+const bot = new TelegramBot(BOT_TOKEN, { 
+    polling: railwayConfig.bot.polling
+});
 
 // --- SERVIDOR WEB ---
 http.createServer((req, res) => { res.writeHead(200); res.end('Tracker Bot OK'); }).listen(3000);
@@ -573,14 +581,30 @@ async function updateDashboardMessage() {
     loadDB();
     let stringSession = new StringSession("");
     if (fs.existsSync(SESSION_FILE)) stringSession = new StringSession(fs.readFileSync(SESSION_FILE, 'utf8'));
-    const client = new TelegramClient(stringSession, API_ID, API_HASH, { connectionRetries: 5 });
-
-    await client.start({
-        phoneNumber: async () => await input.text("Número: "),
-        password: async () => await input.text("2FA: "),
-        phoneCode: async () => await input.text("Código: "),
-        onError: (err) => log(err, "ERROR"),
+    const client = new TelegramClient(stringSession, API_ID, API_HASH, { 
+        connectionRetries: 5,
+        retryDelay: 1000,
+        timeout: 10000,
+        useWSS: false,
+        baseLogger: 'none'
     });
+
+    try {
+        await client.start({
+            phoneNumber: async () => await input.text("Número: "),
+            password: async () => await input.text("2FA: "),
+            phoneCode: async () => await input.text("Código: "),
+            onError: (err) => log(`Auth Error: ${err.message}`, "ERROR"),
+        });
+    } catch (error) {
+        log(`Client Start Error: ${error.message}`, "ERROR");
+        // Try to reconnect after delay
+        setTimeout(() => {
+            log("Attempting to reconnect...", "INFO");
+            process.exit(1); // Let Railway restart the process
+        }, 5000);
+        return;
+    }
 
     if (!fs.existsSync(SESSION_FILE)) fs.writeFileSync(SESSION_FILE, client.session.save());
     log("Userbot Conectado. Escuchando canales...", "INFO");
@@ -635,3 +659,23 @@ async function updateDashboardMessage() {
 
     setInterval(updateTracking, UPDATE_INTERVAL);
 })();
+
+// Global error handlers
+process.on('uncaughtException', (error) => {
+    log(`Uncaught Exception: ${error.message}`, "ERROR");
+    console.error(error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    log(`Unhandled Rejection at: ${promise}, reason: ${reason}`, "ERROR");
+});
+
+process.on('SIGTERM', () => {
+    log('SIGTERM received, shutting down gracefully', "INFO");
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    log('SIGINT received, shutting down gracefully', "INFO");
+    process.exit(0);
+});
