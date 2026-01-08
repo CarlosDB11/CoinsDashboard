@@ -375,7 +375,6 @@ async function updateLiveListMessage(type, tokens, title, emoji) {
 
         // LÓGICA DE SIMULACIÓN VISUAL
         let simText = `⏳ <i>Simulando entrada...</i>`;
-        const stats = t.listStats ? t.listStats[type] : null;
         const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
 
         if (stats) {
