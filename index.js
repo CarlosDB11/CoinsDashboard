@@ -25,6 +25,7 @@ const MIN_GROWTH_SHOW = 1.30;
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
 // --- RUTA SEGURA PARA DATOS ---
+const fs = require('fs');
 const DATA_FOLDER = './data'; // Nombre de la carpeta "caja fuerte"
 
 // Si la carpeta no existe, la creamos (para que no de error)
