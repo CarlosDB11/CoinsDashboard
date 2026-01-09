@@ -24,7 +24,7 @@ const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monito
 const MIN_MC_ENTRY = 10000;     
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
-const UPDATE_INTERVAL = 30000;  
+const UPDATE_INTERVAL = 20000;  
 const MIN_GROWTH_SHOW = 1.00; // Mostrar todos para filtrar después en el TOP 10
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
@@ -32,7 +32,7 @@ const LIST_HOLD_TIME = 15 * 60 * 1000;
 let lastMessageUpdate = {
     top: 0 // Cambiado para solo usar 'top'
 };
-const MESSAGE_UPDATE_COOLDOWN = 25000; 
+const MESSAGE_UPDATE_COOLDOWN = 20000; 
 let telegramRateLimited = false;
 let rateLimitEndTime = 0; 
 
@@ -144,26 +144,12 @@ function canSendMessage(type) {
 async function safeTelegramCall(asyncFunction, context = "", type = "top") {
     try {
         if (!canSendMessage(type)) return null;
-        
         const result = await asyncFunction();
-        
-        // ÉXITO: Actualizamos tiempo
         lastMessageUpdate[type] = Date.now();
         return result;
     } catch (error) {
-        // FALLO: Aún así actualizamos el tiempo para evitar bucles infinitos de intentos fallidos
-        lastMessageUpdate[type] = Date.now(); 
-
         if (handleTelegramError(error, context)) return null;
-        
-        // Si el error es crítico (no se puede editar), lo dejamos pasar o lo logueamos
         log(`Error en ${context}: ${error.message}`, "ERROR");
-        
-        // IMPORTANTE: Devolvemos el error original si es "message not found" para manejarlo arriba
-        if (error.message && error.message.includes("message to edit not found")) {
-            throw error; 
-        }
-        
         return null;
     }
 }
@@ -351,9 +337,6 @@ function updateSimulationLogic(token, currentPrice, currentFdv) {
     }
 }
 
-// ==========================================
-// CORRECCIÓN 2: LÓGICA DE ACTUALIZACIÓN DEL MENSAJE
-// ==========================================
 async function updateTopPerformersMessage(tokens) {
     const type = 'top';
     if (!canSendMessage(type)) return;
@@ -362,11 +345,7 @@ async function updateTopPerformersMessage(tokens) {
     if (tokens.length === 0) {
         if (liveListIds.top) {
             await safeTelegramCall(async () => {
-                try {
-                    await bot.deleteMessage(DESTINATION_ID, liveListIds.top);
-                } catch (e) {
-                    // Ignorar error si ya no existe
-                }
+                await bot.deleteMessage(DESTINATION_ID, liveListIds.top);
                 liveListIds.top = null;
                 saveDB();
             }, `delete-${type}`, type);
@@ -374,13 +353,14 @@ async function updateTopPerformersMessage(tokens) {
         return;
     }
 
-    // Ordenar y preparar texto (TU LÓGICA ORIGINAL)
+    // Ordenar por Ganancia (Growth) Descendente
     tokens.sort((a, b) => {
         const growthA = (a.currentFdv / a.entryFdv);
         const growthB = (b.currentFdv / b.entryFdv);
         return growthB - growthA;
     });
 
+    // CORTAR AL TOP 20
     const displayTokens = tokens.slice(0, 20);
 
     let text = `📊 <b>TOP PERFORMERS (TOP 20)</b>\n`;
@@ -389,16 +369,34 @@ async function updateTopPerformersMessage(tokens) {
     displayTokens.forEach((t, index) => {
         const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
         
+        // --- LOGICA DE ICONOS CONDICIONALES ---
         let statusIcons = "";
-        if (t.mentions.length >= 3) statusIcons += "🔥";
-        if (t.isRecoveringNow) statusIcons += " ♻️";
-        if (t.isBreakingAth) statusIcons += " ⚡";
+        
+        // 1. FUEGO (3 Calls o más)
+        if (t.mentions.length >= 3) {
+            statusIcons += "🔥";
+        }
+
+        // 2. RECICLAJE (Dip Eater - cumpliendo condición)
+        // La condición se calcula en updateTracking y se guarda en t.isRecoveringNow
+        if (t.isRecoveringNow) {
+            statusIcons += " ♻️";
+        }
+
+        // 3. RAYOS (Rompiendo ATH)
+        // La condición se calcula en updateTracking y se guarda en t.isBreakingAth
+        if (t.isBreakingAth) {
+            statusIcons += " ⚡";
+        }
+
+        // -------------------------------------
 
         const stats = t.listStats ? t.listStats['top'] : null;
         let simText = `⏳ <i>Simulando...</i>`;
 
         if (stats) {
             if (stats.price2Min !== null) {
+                // Resultados Simulación
                 const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
                 const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
                 const iconSim = profitPct >= 0 ? '📈' : '📉';
@@ -408,18 +406,21 @@ async function updateTopPerformersMessage(tokens) {
                 simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n`;
                 simText += `   🛒 <b>Compra (${simulationTimeMinutes}m):</b> ${simTimeStr} | MC: ${simFdvStr}`;
             } else {
+                // Cuenta regresiva
                 const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
                 const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
                 simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
             }
         }
 
+        // Menciones formateadas
         const mentionsList = t.mentions.map(m => {
             const timeStr = getShortDate(m.time);
             const channelLink = m.link ? `<a href="${m.link}">${escapeHtml(m.channel)}</a>` : `<b>${escapeHtml(m.channel)}</b>`;
             return `• ${timeStr} - ${channelLink}`;
         }).join('\n');
 
+        // Construcción del bloque del token
         text += `${index + 1}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
         text += `   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
         text += `   ${simText}\n`; 
@@ -429,30 +430,23 @@ async function updateTopPerformersMessage(tokens) {
 
     text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
 
-    // --- AQUÍ ESTÁ EL CAMBIO CLAVE ---
-    
-    // 1. Intentar Editar si existe ID
+    // Enviar o Editar Mensaje
     if (liveListIds.top) {
-        try {
-            await safeTelegramCall(async () => {
-                return await bot.editMessageText(text, {
-                    chat_id: DESTINATION_ID,
-                    message_id: liveListIds.top,
-                    parse_mode: 'HTML',
-                    disable_web_page_preview: true
-                });
-            }, `edit-${type}`, type);
-        } catch (e) {
-            // Este catch ahora captura el error que lanzamos en safeTelegramCall
-            if (e.message && (e.message.includes("not found") || e.message.includes("message to edit"))) {
-                log("⚠️ Mensaje Top Performers borrado manualmente. Reiniciando ID...", "ALERT");
-                liveListIds.top = null; // Reseteamos ID
-                saveDB();
+        await safeTelegramCall(async () => {
+            return await bot.editMessageText(text, {
+                chat_id: DESTINATION_ID,
+                message_id: liveListIds.top,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
+            });
+        }, `edit-${type}`, type).catch(async (e) => {
+            if (e && e.message && e.message.includes("not found")) {
+                liveListIds.top = null; // Reiniciar si fue borrado
             }
-        }
+        });
     }
     
-    // 2. Si no existe ID (o se acaba de resetear arriba), crear nuevo
+    // Si no existe (o falló edit), crear nuevo
     if (!liveListIds.top) {
         const sent = await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, text, { 
@@ -460,11 +454,9 @@ async function updateTopPerformersMessage(tokens) {
                 disable_web_page_preview: true 
             });
         }, `create-${type}`, type);
-        
         if (sent) {
             liveListIds.top = sent.message_id;
             saveDB();
-            log(`✅ Nuevo mensaje Top Performers creado: ID ${sent.message_id}`, "INFO");
         }
     }
 }
