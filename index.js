@@ -242,6 +242,53 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
     await bot.sendMessage(DESTINATION_ID, `✅ Inversión simulada: $${amount}`);
 });
 
+// COMANDO: DASHBOARD (Invocar panel manualmente)
+bot.onText(/[\/\.]dashboard/, async (msg) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+
+    // 1. Limpieza preventiva: Si el bot cree que hay un mensaje activo, bórralo de la memoria
+    // para forzar que el próximo sea uno nuevo al final del chat.
+    if (liveListIds.top) {
+        try { 
+            await bot.deleteMessage(DESTINATION_ID, liveListIds.top); 
+        } catch (e) {
+            // Si falla (ej. el mensaje ya no existía), no importa, seguimos.
+        }
+        liveListIds.top = null;
+        saveDB();
+    }
+
+    const tokensList = Object.values(activeTokens);
+
+    // 2. Escenario: NO hay tokens
+    if (tokensList.length === 0) {
+        await safeTelegramCall(async () => {
+            return await bot.sendMessage(DESTINATION_ID, 
+                `📡 <b>MONITOR ACTIVO</b>\n\n` +
+                `Actualmente no hay tokens en seguimiento.\n` +
+                `El panel <b>Top Performers</b> aparecerá automáticamente cuando llegue la primera señal válida.`, 
+                { parse_mode: 'HTML' }
+            );
+        }, 'dashboard-empty', 'urgent'); // Usamos 'urgent' para que responda rápido
+    } 
+    // 3. Escenario: HAY tokens
+    else {
+        // Enviamos un mensaje temporal de "Cargando"
+        const loadingMsg = await safeTelegramCall(async () => {
+            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Actualizando precios y generando panel...</b>", { parse_mode: 'HTML' });
+        }, 'dashboard-loading', 'urgent');
+
+        // Ejecutamos la actualización completa (busca precios en API y genera el panel)
+        // Esto creará el nuevo panel Top Performers automáticamente.
+        await updateTracking();
+
+        // Borramos el mensaje de "Cargando" para que quede limpio
+        if (loadingMsg) {
+            try { await bot.deleteMessage(DESTINATION_ID, loadingMsg.message_id); } catch(e){}
+        }
+    }
+});
+
 // COMANDO: ELIMINAR UN TOKEN ESPECÍFICO
 bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
     if (msg.chat.id !== DESTINATION_ID) return;
