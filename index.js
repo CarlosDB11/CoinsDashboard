@@ -146,29 +146,31 @@ function canSendMessage(type) {
 // ==========================================
 async function safeTelegramCall(asyncFunction, context = "", type = "top") {
     try {
-        if (!canSendMessage(type)) return null;
+        // CAMBIO: Si el tipo es 'urgent' (comandos), ignoramos el cooldown de 20s
+        if (type !== 'urgent' && !canSendMessage(type)) return null;
+        
         const result = await asyncFunction();
-        lastMessageUpdate[type] = Date.now();
+        
+        // Solo actualizamos el reloj si NO es un comando urgente
+        if (type !== 'urgent') {
+            lastMessageUpdate[type] = Date.now();
+        }
         return result;
     } catch (error) {
-        // Si es Rate Limit, lo manejamos y esperamos
         if (handleTelegramError(error, context)) return null;
 
-        // CORRECCIÓN: Detectar si el mensaje fue borrado o no existe
         const errMsg = error.message || "";
+        // Detectar si el mensaje ya no existe para avisar a la función principal
         if (errMsg.includes("message to edit not found") || 
             errMsg.includes("message_id_invalid") || 
             errMsg.includes("chat not found")) {
-            // Lanzamos el error hacia arriba para que la función principal sepa que debe resetear el ID
-            throw error; 
+            throw error; // Lanzamos el error para que updateTopPerformersMessage lo capture
         }
 
-        // Si es otro error (ej. error de red), solo logueamos
         log(`Error en ${context}: ${errMsg}`, "ERROR");
         return null;
     }
 }
-
 // ==========================================
 // 2. GESTIÓN DE BASE DE DATOS
 // ==========================================
@@ -216,9 +218,10 @@ bot.onText(/[\/\.]help/, async (msg) => {
         `• <code>/clean</code> ➔ Elimina el mensaje de Top Performers.\n` +
         `• <code>/nuke</code> ➔ ☢️ Borra TODA la DB.`;
 
+    // AGREGADO: 'urgent' como tercer parámetro
     await safeTelegramCall(async () => {
         return await bot.sendMessage(DESTINATION_ID, helpText, { parse_mode: 'HTML' });
-    }, 'help-command');
+    }, 'help-command', 'urgent');
 });
 
 bot.onText(/[\/\.]settime (\d+)/, async (msg, match) => {
@@ -271,21 +274,29 @@ bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
     }
 });
 
+// COMANDO: NUKE
 bot.onText(/[\/\.]nuke/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     if (liveListIds.top) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch(e) {}
     activeTokens = {};
     liveListIds = { top: null };
     saveDB();
-    await bot.sendMessage(DESTINATION_ID, "☢️ **BASE DE DATOS ELIMINADA**", { parse_mode: 'Markdown' });
+    // AGREGADO: 'urgent'
+    await safeTelegramCall(async () => {
+        await bot.sendMessage(DESTINATION_ID, "☢️ **BASE DE DATOS ELIMINADA**", { parse_mode: 'Markdown' });
+    }, 'nuke-command', 'urgent');
 });
 
+// COMANDO: CLEAN
 bot.onText(/[\/\.]clean/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     if (liveListIds.top) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch(e) {}
     liveListIds.top = null;
     saveDB();
-    await bot.sendMessage(DESTINATION_ID, `🗑️ Lista visual eliminada.`);
+    // AGREGADO: 'urgent'
+    await safeTelegramCall(async () => {
+        await bot.sendMessage(DESTINATION_ID, `🗑️ Lista visual eliminada.`);
+    }, 'clean-command', 'urgent');
 });
 
 // ==========================================
@@ -354,28 +365,22 @@ function updateSimulationLogic(token, currentPrice, currentFdv) {
 
 async function updateTopPerformersMessage(tokens) {
     const type = 'top';
+    // Aquí SI respetamos el rate limit (sin 'urgent')
     if (!canSendMessage(type)) return;
 
-    // Si no hay tokens, limpiar mensaje
     if (tokens.length === 0) {
         if (liveListIds.top) {
-            await safeTelegramCall(async () => {
+            try {
                 await bot.deleteMessage(DESTINATION_ID, liveListIds.top);
-                liveListIds.top = null;
-                saveDB();
-            }, `delete-${type}`, type);
+            } catch (e) {}
+            liveListIds.top = null;
+            saveDB();
         }
         return;
     }
 
-    // Ordenar por Ganancia (Growth) Descendente
-    tokens.sort((a, b) => {
-        const growthA = (a.currentFdv / a.entryFdv);
-        const growthB = (b.currentFdv / b.entryFdv);
-        return growthB - growthA;
-    });
-
-    // CORTAR AL TOP 20
+    // --- (LÓGICA DE ORDENAMIENTO Y TEXTO IGUAL QUE ANTES) ---
+    tokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
     const displayTokens = tokens.slice(0, 20);
 
     let text = `📊 <b>TOP PERFORMERS (TOP 20)</b>\n`;
@@ -383,85 +388,58 @@ async function updateTopPerformersMessage(tokens) {
 
     displayTokens.forEach((t, index) => {
         const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
-        
-        // --- LOGICA DE ICONOS CONDICIONALES ---
         let statusIcons = "";
-        
-        // 1. FUEGO (3 Calls o más)
-        if (t.mentions.length >= 3) {
-            statusIcons += "🔥";
-        }
-
-        // 2. RECICLAJE (Dip Eater - cumpliendo condición)
-        // La condición se calcula en updateTracking y se guarda en t.isRecoveringNow
-        if (t.isRecoveringNow) {
-            statusIcons += " ♻️";
-        }
-
-        // 3. RAYOS (Rompiendo ATH)
-        // La condición se calcula en updateTracking y se guarda en t.isBreakingAth
-        if (t.isBreakingAth) {
-            statusIcons += " ⚡";
-        }
-
-        // -------------------------------------
+        if (t.mentions.length >= 3) statusIcons += "🔥";
+        if (t.isRecoveringNow) statusIcons += " ♻️";
+        if (t.isBreakingAth) statusIcons += " ⚡";
 
         const stats = t.listStats ? t.listStats['top'] : null;
         let simText = `⏳ <i>Simulando...</i>`;
-
-        if (stats) {
-            if (stats.price2Min !== null) {
-                // Resultados Simulación
-                const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
-                const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
-                const iconSim = profitPct >= 0 ? '📈' : '📉';
-                const simTimeStr = stats.simEntryTime ? getTimeOnly(stats.simEntryTime) : "--:--";
-                const simFdvStr = stats.simEntryFdv ? formatCurrency(stats.simEntryFdv) : "N/A";
-
-                simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n`;
-                simText += `   🛒 <b>Compra (${simulationTimeMinutes}m):</b> ${simTimeStr} | MC: ${simFdvStr}`;
-            } else {
-                // Cuenta regresiva
-                const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
-                const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
-                simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
-            }
+        if (stats && stats.price2Min !== null) {
+            const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
+            const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
+            const iconSim = profitPct >= 0 ? '📈' : '📉';
+            simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCurrency(stats.simEntryFdv)}`;
+        } else if (stats) {
+            const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
+            const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
+            simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
         }
 
-        // Menciones formateadas
         const mentionsList = t.mentions.map(m => {
-            const timeStr = getShortDate(m.time);
-            const channelLink = m.link ? `<a href="${m.link}">${escapeHtml(m.channel)}</a>` : `<b>${escapeHtml(m.channel)}</b>`;
-            return `• ${timeStr} - ${channelLink}`;
+            const link = m.link ? `<a href="${m.link}">${escapeHtml(m.channel)}</a>` : `<b>${escapeHtml(m.channel)}</b>`;
+            return `• ${getShortDate(m.time)} - ${link}`;
         }).join('\n');
 
-        // Construcción del bloque del token
-        text += `${index + 1}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n`;
-        text += `   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n`;
-        text += `   ${simText}\n`; 
-        text += `   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> | <a href="https://mevx.io/solana/${t.ca}">MEVX</a>\n`;
-        text += `   <blockquote expandable>${mentionsList}</blockquote>\n\n`;
+        text += `${index + 1}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n   ${simText}\n   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> | <a href="https://mevx.io/solana/${t.ca}">MEVX</a>\n   <blockquote expandable>${mentionsList}</blockquote>\n\n`;
     });
-
     text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
 
-    // Enviar o Editar Mensaje
+    // --- AQUÍ ESTÁ EL ARREGLO DEL "LOOP ZOMBIE" ---
+    
+    // 1. Intentar EDITAR
     if (liveListIds.top) {
-        await safeTelegramCall(async () => {
-            return await bot.editMessageText(text, {
-                chat_id: DESTINATION_ID,
-                message_id: liveListIds.top,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true
-            });
-        }, `edit-${type}`, type).catch(async (e) => {
-            if (e && e.message && e.message.includes("not found")) {
-                liveListIds.top = null; // Reiniciar si fue borrado
+        try {
+            await safeTelegramCall(async () => {
+                return await bot.editMessageText(text, {
+                    chat_id: DESTINATION_ID,
+                    message_id: liveListIds.top,
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true
+                });
+            }, `edit-${type}`, type);
+        } catch (error) {
+            // Si safeTelegramCall lanza error es porque el mensaje no existe
+            const errMsg = error.message || "";
+            if (errMsg.includes("not found") || errMsg.includes("invalid") || errMsg.includes("chat")) {
+                log(`Mensaje perdido. Reiniciando panel...`, "INFO");
+                liveListIds.top = null; // Borramos ID inválido
+                saveDB();
             }
-        });
+        }
     }
     
-    // Si no existe (o falló edit), crear nuevo
+    // 2. Si no hay ID (o se acaba de borrar arriba), CREAR NUEVO
     if (!liveListIds.top) {
         const sent = await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, text, { 
