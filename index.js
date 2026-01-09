@@ -24,7 +24,7 @@ const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monito
 const MIN_MC_ENTRY = 10000;     
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
-const UPDATE_INTERVAL = 25000;  
+const UPDATE_INTERVAL = 30000;  
 const MIN_GROWTH_SHOW = 1.00; // Mostrar todos para filtrar después en el TOP 10
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
