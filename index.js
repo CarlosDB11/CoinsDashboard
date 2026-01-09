@@ -265,32 +265,40 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
 bot.onText(/[\/\.]dashboard/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
 
+    // 1. Borrar mensajes viejos visualmente para forzar refresco
     if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
     if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
     
+    // Reseteamos IDs en memoria
     liveListIds.top1 = null;
     liveListIds.top2 = null;
+    lastSentText = { p1: "", p2: "" };
     saveDB();
 
-    const tokensList = Object.values(activeTokens);
+    // 2. Enviamos mensaje de carga
+    const loadingMsg = await safeTelegramCall(async () => {
+        return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Analizando mercado y limpiando DB...</b>", { parse_mode: 'HTML' });
+    }, 'dashboard-loading', 'urgent');
 
-    if (tokensList.length === 0) {
+    // 3. Ejecutamos el tracking (esto limpia tokens > 7h y actualiza precios)
+    await updateTracking();
+
+    // 4. Borramos el mensaje de carga
+    if (loadingMsg) {
+        try { await bot.deleteMessage(DESTINATION_ID, loadingMsg.message_id); } catch(e){}
+    }
+
+    // 5. VERIFICACIÓN FINAL
+    // Si después de actualizar NO se generó ni el panel 1 ni el 2, avisar al usuario.
+    if (!liveListIds.top1 && !liveListIds.top2) {
         await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, 
-                `📡 <b>MONITOR ACTIVO</b>\n\nSin tokens por ahora.`, 
+                `📡 <b>MONITOR ACTIVO</b>\n\n` +
+                `🧹 La base de datos se ha limpiado.\n` +
+                `📉 No hay tokens activos (todos > 7h o < MC mínimo).`, 
                 { parse_mode: 'HTML' }
             );
         }, 'dashboard-empty', 'urgent');
-    } else {
-        const loadingMsg = await safeTelegramCall(async () => {
-            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Generando paneles...</b>", { parse_mode: 'HTML' });
-        }, 'dashboard-loading', 'urgent');
-
-        await updateTracking();
-
-        if (loadingMsg) {
-            try { await bot.deleteMessage(DESTINATION_ID, loadingMsg.message_id); } catch(e){}
-        }
     }
 });
 
