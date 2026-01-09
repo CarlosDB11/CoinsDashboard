@@ -141,6 +141,9 @@ function canSendMessage(type) {
     return true;
 }
 
+// ==========================================
+// CORRECCIÓN 1: Manejo de errores mejorado
+// ==========================================
 async function safeTelegramCall(asyncFunction, context = "", type = "top") {
     try {
         if (!canSendMessage(type)) return null;
@@ -148,8 +151,20 @@ async function safeTelegramCall(asyncFunction, context = "", type = "top") {
         lastMessageUpdate[type] = Date.now();
         return result;
     } catch (error) {
+        // Si es Rate Limit, lo manejamos y esperamos
         if (handleTelegramError(error, context)) return null;
-        log(`Error en ${context}: ${error.message}`, "ERROR");
+
+        // CORRECCIÓN: Detectar si el mensaje fue borrado o no existe
+        const errMsg = error.message || "";
+        if (errMsg.includes("message to edit not found") || 
+            errMsg.includes("message_id_invalid") || 
+            errMsg.includes("chat not found")) {
+            // Lanzamos el error hacia arriba para que la función principal sepa que debe resetear el ID
+            throw error; 
+        }
+
+        // Si es otro error (ej. error de red), solo logueamos
+        log(`Error en ${context}: ${errMsg}`, "ERROR");
         return null;
     }
 }
