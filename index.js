@@ -17,7 +17,6 @@ const API_HASH = process.env.API_HASH;
 const BOT_TOKEN = process.env.BOT_TOKEN; 
 const DESTINATION_ID = Number(process.env.DESTINATION_ID); 
 
-
 // --- CANALES A ESPIAR ---
 const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monitor", "solhousesignal", "nevadielegends", "PFsafeLaunch", "ReVoX_Academy", "dacostest", "pfultimate", "GemDynasty", "Bot_NovaX", "CCMFreeSignal", "KropClub", "ciphercallsfree", "solanagemsradar", "solana_whales_signal", "pingcalls", "gem_tools_calls", "SAVANNAHCALLS", "athenadefai", "Bigbabywhale", "SavannahSOL", "A3CallChan", "PEPE_Calls28", "gems_calls100x", "ai_dip_caller", "KingdomOfDegenCalls", "fttrenches_volsm", "loganpump", "bananaTrendingBot"];
 
@@ -26,43 +25,38 @@ const MIN_MC_ENTRY = 10000;
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
 const UPDATE_INTERVAL = 15000;  
-const MIN_GROWTH_SHOW = 1.00; // Mostrar todos para filtrar después en el TOP 10
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
-// --- RATE LIMITING ---
-let lastMessageUpdate = {
-    top: 0 // Cambiado para solo usar 'top'
-};
-const MESSAGE_UPDATE_COOLDOWN = 15000; 
-let telegramRateLimited = false;
-let rateLimitEndTime = 0; 
-let isTrackingUpdates = false; // <--- EL SEMÁFORO IMPRESCINDIBLE
-let lastSentText = ""; // <--- Para evitar editar si el texto no cambió
-
+// --- ESTADO GLOBAL (UNIFICADO) ---
 let activeTokens = {}; 
-let dashboardMsgId = null; 
 let simulationAmount = 7; 
 let simulationTimeMinutes = 2; 
 
-// AHORA GUARDAMOS DOS IDs (Página 1 y Página 2)
+// ID de mensajes: Paginación (Mensaje 1 y Mensaje 2)
 let liveListIds = {
     top1: null, // Mensaje del 1 al 10
     top2: null  // Mensaje del 11 al 20
 };
 
-// Rate limiting de texto para DOS mensajes
+// Rate limiting: Control de texto para no editar si es igual
 let lastSentText = {
     p1: "",
     p2: ""
 };
 
-// Rate limiting configuration
+// Rate limiting API & Telegram
+const MESSAGE_UPDATE_COOLDOWN = 15000; 
+let lastMessageUpdate = { top: 0 };
+let telegramRateLimited = false;
+let rateLimitEndTime = 0; 
+let isTrackingUpdates = false; 
+
+// Rate limiting DexScreener
 const RATE_LIMIT_DELAY = 1000; 
 let lastApiCall = 0; 
 
 // --- RUTA SEGURA PARA DATOS ---
 const DATA_FOLDER = './data'; 
-
 if (!fs.existsSync(DATA_FOLDER)){
     fs.mkdirSync(DATA_FOLDER);
 }
@@ -70,15 +64,6 @@ if (!fs.existsSync(DATA_FOLDER)){
 const DB_FILE = `${DATA_FOLDER}/tokens_db.json`;
 const SESSION_FILE = 'session.txt';
 const SOLANA_ADDRESS_REGEX = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
-
-// --- ESTADO GLOBAL ---
-let activeTokens = {}; 
-let dashboardMsgId = null; // Mantenemos variable aunque ahora será el Top Performers
-let simulationAmount = 7; 
-let simulationTimeMinutes = 2; 
-let liveListIds = {
-    top: null // Solo usaremos este ID
-};
 
 // --- INICIALIZAR BOT ---
 const railwayConfig = require('./railway.config.js');
@@ -135,7 +120,7 @@ function escapeHtml(text) {
 }
 
 // ==========================================
-// 1. GESTIÓN DE RATE LIMITING (Sin cambios mayores)
+// 1. GESTIÓN DE RATE LIMITING
 // ==========================================
 function handleTelegramError(error, context = "") {
     if (error.message && error.message.includes('429')) {
@@ -161,39 +146,19 @@ function canSendMessage(type) {
     return true;
 }
 
-// ==========================================
-// CORRECCIÓN 1: Manejo de errores mejorado
-// ==========================================
-
-async function safeTelegramCall(asyncFunction, context = "", type = "top", newText = null) {
+async function safeTelegramCall(asyncFunction, context = "", type = "top") {
     try {
-        // 1. Si vamos a editar el TOP, revisamos si el texto es idéntico al anterior
-        if (type === 'top' && newText && newText === lastSentText) {
-            // Si el texto es igual, NO hacemos nada y ahorramos la petición
-            return null; 
-        }
-
-        // 2. Rate Limiting temporal
         if (type !== 'urgent' && !canSendMessage(type)) return null;
         
-        // 3. ACTUALIZAR RELOJ ANTES (Para evitar condiciones de carrera)
         if (type !== 'urgent') {
             lastMessageUpdate[type] = Date.now();
         }
         
-        const result = await asyncFunction();
-        
-        // 4. Si se envió correctamente, guardamos el texto como "último enviado"
-        if (type === 'top' && newText) {
-            lastSentText = newText;
-        }
-
-        return result;
+        return await asyncFunction();
     } catch (error) {
         if (handleTelegramError(error, context)) return null;
 
         const errMsg = error.message || "";
-        // Ignorar error si Telegram dice que el mensaje no ha cambiado
         if (errMsg.includes("message is not modified")) return null;
 
         if (errMsg.includes("message to edit not found") || 
@@ -206,6 +171,7 @@ async function safeTelegramCall(asyncFunction, context = "", type = "top", newTe
         return null;
     }
 }
+
 // ==========================================
 // 2. GESTIÓN DE BASE DE DATOS
 // ==========================================
@@ -214,8 +180,13 @@ function loadDB() {
         try {
             const data = JSON.parse(fs.readFileSync(DB_FILE));
             activeTokens = data.tokens || {};
-            // Adaptación para cargar solo el ID del Top Performers
-            liveListIds = data.liveListIds || { top: null };
+            // Recuperamos los IDs nuevos o reseteamos si es estructura vieja
+            liveListIds = data.liveListIds || { top1: null, top2: null };
+            // Corrección por si viene de la estructura vieja
+            if (liveListIds.top !== undefined) {
+                liveListIds = { top1: null, top2: null };
+            }
+
             simulationAmount = data.simulationAmount || 7;
             simulationTimeMinutes = data.simulationTimeMinutes || 2; 
 
@@ -240,8 +211,6 @@ function saveDB() {
 // ==========================================
 // 3. COMANDOS DEL BOT
 // ==========================================
-
-// COMANDO: AYUDA (Actualizado ligeramente)
 bot.onText(/[\/\.]help/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
 
@@ -250,10 +219,9 @@ bot.onText(/[\/\.]help/, async (msg) => {
         `• <code>/setinvest 10</code> ➔ Cambia inversión simulada.\n` +
         `• <code>/settime 5</code> ➔ Cambia tiempo simulación (min).\n\n` +
         `<b>🧹 LIMPIEZA</b>\n` +
-        `• <code>/clean</code> ➔ Elimina el mensaje de Top Performers.\n` +
+        `• <code>/clean</code> ➔ Elimina los mensajes del Top.\n` +
         `• <code>/nuke</code> ➔ ☢️ Borra TODA la DB.`;
 
-    // AGREGADO: 'urgent' como tercer parámetro
     await safeTelegramCall(async () => {
         return await bot.sendMessage(DESTINATION_ID, helpText, { parse_mode: 'HTML' });
     }, 'help-command', 'urgent');
@@ -277,11 +245,9 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
     await bot.sendMessage(DESTINATION_ID, `✅ Inversión simulada: $${amount}`);
 });
 
-// COMANDO: DASHBOARD
 bot.onText(/[\/\.]dashboard/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
 
-    // Borrar mensajes anteriores si existen
     if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
     if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
     
@@ -311,18 +277,14 @@ bot.onText(/[\/\.]dashboard/, async (msg) => {
     }
 });
 
-// COMANDO: ELIMINAR UN TOKEN ESPECÍFICO
 bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     const input = match[2].trim();
     let foundCa = null;
 
-    // 1. Buscar por CA directa
     if (activeTokens[input]) {
         foundCa = input;
-    } 
-    // 2. Si no es CA, buscar por Símbolo
-    else {
+    } else {
         foundCa = Object.keys(activeTokens).find(ca => 
             activeTokens[ca].symbol.toUpperCase() === input.toUpperCase()
         );
@@ -332,18 +294,14 @@ bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
         const symbol = activeTokens[foundCa].symbol;
         delete activeTokens[foundCa];
         saveDB();
-        
         log(`Token eliminado manualmente: ${symbol} (${foundCa})`, "DELETE");
         await bot.sendMessage(DESTINATION_ID, `🗑️ <b>${symbol}</b> ha sido eliminado de la lista.`, { parse_mode: 'HTML' });
-        
-        // Actualizar el panel inmediatamente
         await updateTracking();
     } else {
         await bot.sendMessage(DESTINATION_ID, `❌ No se encontró el token: <b>${input}</b>`, { parse_mode: 'HTML' });
     }
 });
 
-// COMANDO: NUKE
 bot.onText(/[\/\.]nuke/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e) {}
@@ -358,7 +316,6 @@ bot.onText(/[\/\.]nuke/, async (msg) => {
     }, 'nuke-command', 'urgent');
 });
 
-// COMANDO: CLEAN
 bot.onText(/[\/\.]clean/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e) {}
@@ -373,7 +330,7 @@ bot.onText(/[\/\.]clean/, async (msg) => {
 });
 
 // ==========================================
-// 3. API DEXSCREENER
+// 4. API DEXSCREENER
 // ==========================================
 async function waitForRateLimit() {
     const now = Date.now();
@@ -406,12 +363,10 @@ async function getSingleDexData(address) {
 }
 
 // ==========================================
-// 4. LÓGICA CENTRAL DE TRACKING Y DISPLAY
+// 5. LÓGICA CENTRAL DE TRACKING Y DISPLAY
 // ==========================================
 
-// Función para manejar la simulación en la lista única 'top'
 function updateSimulationLogic(token, currentPrice, currentFdv) {
-    // Usamos 'top' como clave estándar para todos
     if (!token.listStats) token.listStats = {};
     if (!token.listStats['top']) {
         token.listStats['top'] = {
@@ -444,7 +399,6 @@ function formatTokenBlock(t, index, rankingOffset) {
     if (t.isRecoveringNow) statusIcons += " ♻️";
     if (t.isBreakingAth) statusIcons += " ⚡";
 
-    // Lógica de simulación
     const stats = t.listStats ? t.listStats['top'] : null;
     let simText = `⏳ <i>Simulando...</i>`;
     
@@ -459,7 +413,7 @@ function formatTokenBlock(t, index, rankingOffset) {
          simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
     }
 
-    // AQUI CAMBIAMOS A 5 MENCIONES
+    // 5 menciones máximo
     const recentMentions = t.mentions.slice(-5); 
     const mentionsList = recentMentions.map(m => `• ${getShortDate(m.time)} - ${escapeHtml(m.channel)}`).join('\n');
     
@@ -469,9 +423,8 @@ function formatTokenBlock(t, index, rankingOffset) {
     return `${index + rankingOffset}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n   ${simText}\n   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a>\n   <blockquote expandable>${mentionsList}${moreText}</blockquote>\n\n`;
 }
 
-// Función Principal Modificada
+// Función Principal Modificada (Paginación)
 async function updateTopPerformersMessage(tokens) {
-    // Si no hay tokens, limpiar todo
     if (tokens.length === 0) {
         if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
         if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
@@ -482,12 +435,10 @@ async function updateTopPerformersMessage(tokens) {
         return;
     }
 
-    // Ordenar tokens
     tokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
 
-    // Dividir en dos grupos
-    const group1 = tokens.slice(0, 10);  // Top 1 al 10
-    const group2 = tokens.slice(10, 20); // Top 11 al 20
+    const group1 = tokens.slice(0, 10);  
+    const group2 = tokens.slice(10, 20); 
 
     // --- PROCESAR MENSAJE 1 (TOP 1-10) ---
     let text1 = `📊 <b>TOP PERFORMERS (1-10)</b>\n`;
@@ -503,12 +454,11 @@ async function updateTopPerformersMessage(tokens) {
     await handleMessageSend(text1, 'top1', 'p1');
 
     // --- PROCESAR MENSAJE 2 (TOP 11-20) ---
-    // Solo enviamos el segundo mensaje si hay tokens para mostrar
     if (group2.length > 0) {
         let text2 = `📊 <b>TOP PERFORMERS (11-20)</b>\n\n`;
         
         for (const [i, t] of group2.entries()) {
-            const block = formatTokenBlock(t, i, 11); // Offset 11 para que la lista empiece en 11
+            const block = formatTokenBlock(t, i, 11); 
             if ((text2.length + block.length) > 4000) { text2 += `\n<i>(Corte por límite)...</i>`; break; }
             text2 += block;
         }
@@ -516,7 +466,6 @@ async function updateTopPerformersMessage(tokens) {
         
         await handleMessageSend(text2, 'top2', 'p2');
     } else {
-        // Si teníamos un mensaje 2 pero ahora hay menos de 10 tokens, lo borramos
         if (liveListIds.top2) {
             try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e){}
             liveListIds.top2 = null;
@@ -526,13 +475,10 @@ async function updateTopPerformersMessage(tokens) {
     }
 }
 
-// Función auxiliar para enviar/editar (Reduce código repetido)
 async function handleMessageSend(text, idKey, textKey) {
-    // Si el texto es igual al anterior, no hacemos nada (ahorra API)
     if (text === lastSentText[textKey]) return;
 
     if (liveListIds[idKey]) {
-        // Editar
         try {
             await safeTelegramCall(async () => {
                 return await bot.editMessageText(text, {
@@ -544,13 +490,11 @@ async function handleMessageSend(text, idKey, textKey) {
             }, `edit-${idKey}`, 'top');
             lastSentText[textKey] = text;
         } catch (error) {
-            // Si falla edición (ej. borrado manual), reiniciamos ID
             liveListIds[idKey] = null;
         }
     }
 
     if (!liveListIds[idKey]) {
-        // Crear
         const sent = await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, text, { 
                 parse_mode: 'HTML', 
@@ -567,19 +511,14 @@ async function handleMessageSend(text, idKey, textKey) {
 }
 
 async function updateTracking() {
-    // 1. SEMÁFORO: Si ya se está ejecutando, NO iniciar otra vez
-    if (isTrackingUpdates) {
-        return; 
-    }
-    isTrackingUpdates = true; // Bloqueamos la entrada
+    if (isTrackingUpdates) return; 
+    isTrackingUpdates = true; 
 
     try {
         const allAddresses = Object.keys(activeTokens);
         
-        // Si no hay tokens, liberamos y salimos
         if (allAddresses.length === 0) {
-            // Opcional: Si quieres borrar el mensaje cuando no hay tokens
-            if (liveListIds.top) await updateTopPerformersMessage([]); 
+            if (liveListIds.top1 || liveListIds.top2) await updateTopPerformersMessage([]); 
             return;
         }
 
@@ -598,7 +537,6 @@ async function updateTracking() {
                 const pairData = pairsData.find(p => p.baseToken.address === ca);
 
                 if (!pairData) {
-                    // Limpieza de tokens viejos sin datos
                     if (Date.now() - token.detectedAt > 24*60*60*1000) {
                         delete activeTokens[ca];
                         dbChanged = true;
@@ -606,7 +544,6 @@ async function updateTracking() {
                     continue; 
                 }
 
-                // Eliminar si cae por debajo del MC mínimo
                 if (pairData.fdv < MIN_MC_KEEP) {
                     delete activeTokens[ca];
                     dbChanged = true;
@@ -616,13 +553,9 @@ async function updateTracking() {
                 const currentFdv = pairData.fdv;
                 const currentPrice = parseFloat(pairData.priceUsd);
 
-                // Inicialización de campos si faltan
                 if (!token.maxFdv) token.maxFdv = token.entryFdv;
                 if (token.isDipping === undefined) token.isDipping = false;
                 
-                // --- LÓGICA DE ESTADO ---
-
-                // Breaking ATH
                 token.isBreakingAth = currentFdv > token.maxFdv;
                 
                 if (currentFdv > token.maxFdv) {
@@ -631,20 +564,16 @@ async function updateTracking() {
                     dbChanged = true;
                 }
 
-                // Dips
                 if (currentFdv < (token.maxFdv * 0.75)) {
                     if (!token.isDipping) { token.isDipping = true; dbChanged = true; }
                 }
                 
-                // Recuperación
                 token.isRecoveringNow = token.isDipping && currentFdv >= (token.maxFdv * 0.90) && currentFdv < token.maxFdv;
 
-                // Actualizar valores
                 token.currentFdv = currentFdv;
                 token.currentPrice = currentPrice;
                 token.lastUpdate = now;
 
-                // Actualizar Simulador
                 updateSimulationLogic(token, currentPrice, currentFdv);
 
                 displayList.push(token);
@@ -652,21 +581,17 @@ async function updateTracking() {
         }
 
         if (dbChanged) saveDB();
-
-        // Llamar a la visualización
-        // NOTA: Asegúrate de pasar 'displayList' a tu updateTopPerformersMessage
         await updateTopPerformersMessage(displayList);
 
     } catch (e) {
         log(`Error CRÍTICO en updateTracking: ${e.message}`, "ERROR");
     } finally {
-        // IMPORTANTE: Liberar el semáforo pase lo que pase
         isTrackingUpdates = false; 
     }
 }
 
 // ==========================================
-// 5. CLIENTE USERBOT
+// 6. CLIENTE USERBOT
 // ==========================================
 (async () => {
     log("Iniciando Bot Híbrido...", "INFO");
@@ -727,20 +652,15 @@ async function updateTracking() {
             for (const ca of uniqueAddresses) {
                 const mentionData = { channel: channelName, link: messageLink, time: Date.now() };
 
-                // CASO A: Token ya existe
                 if (activeTokens[ca]) {
                     if (!activeTokens[ca].mentions.some(m => m.channel === channelName)) {
                         activeTokens[ca].mentions.push(mentionData);
                         saveDB();
-                        // ❌ AQUÍ QUITAMOS updateTracking()
-                        // El setInterval lo recogerá en máximo 20 segundos
                         log(`Nueva mención para ${activeTokens[ca].symbol}`, "INFO");
                     }
                     continue; 
                 }
 
-                // CASO B: Token Nuevo
-                // Verificamos DexScreener una sola vez
                 const data = await getSingleDexData(ca);
                 if (data && data.fdv >= MIN_MC_ENTRY) {
                     log(`NUEVO TOKEN DETECTADO: ${data.symbol}`, "CAPTURE");
@@ -755,10 +675,7 @@ async function updateTracking() {
                     };
                     
                     updateSimulationLogic(activeTokens[ca], data.price, data.fdv);
-                    
                     saveDB();
-                    // ❌ AQUÍ TAMBIÉN QUITAMOS updateTracking()
-                    // Esto evita el "Flood" cuando llegan 5 señales seguidas.
                 }
             }
         }
