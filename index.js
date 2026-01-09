@@ -25,17 +25,21 @@ const MIN_MC_ENTRY = 10000;
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
 const UPDATE_INTERVAL = 15000;  
-const LIST_HOLD_TIME = 15 * 60 * 1000; 
+
+// --- TIEMPOS Y FILTROS ---
+const NEW_TAG_MS = 15 * 60 * 1000;        // 15 Minutos (Etiqueta NUEVO)
+const TIME_SPLIT_MS = 2 * 60 * 60 * 1000; // 2 Horas (División Fresh/Mature)
+const MAX_AGE_MS = 7 * 60 * 60 * 1000;    // 7 Horas (Eliminar tracking)
 
 // --- ESTADO GLOBAL (UNIFICADO) ---
 let activeTokens = {}; 
 let simulationAmount = 7; 
 let simulationTimeMinutes = 2; 
 
-// ID de mensajes: Paginación (Mensaje 1 y Mensaje 2)
+// ID de mensajes: Paginación
 let liveListIds = {
-    top1: null, // Mensaje del 1 al 10
-    top2: null  // Mensaje del 11 al 20
+    top1: null, // Fresh Gems (< 2h)
+    top2: null  // Mature Gems (> 2h y < 7h)
 };
 
 // Rate limiting: Control de texto para no editar si es igual
@@ -75,7 +79,7 @@ const bot = new TelegramBot(BOT_TOKEN, {
 http.createServer((req, res) => { res.writeHead(200); res.end('Tracker Bot OK'); }).listen(3000);
 
 // ==========================================
-// 0. SISTEMA DE LOGS DETALLADOS (COLOMBIA)
+// 0. SISTEMA DE LOGS Y FORMATOS
 // ==========================================
 function log(message, type = "INFO") {
     const now = new Date();
@@ -93,17 +97,25 @@ function log(message, type = "INFO") {
     console.log(`[${timestamp}] ${icon} [${type}] ${message}`);
 }
 
-function formatCurrency(num) {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
+// Formato compacto (ej: $120K, $1.5M)
+function formatCompactNumber(num) {
+    return new Intl.NumberFormat('en-US', {
+        notation: "compact",
+        compactDisplay: "short",
+        maximumFractionDigits: 1,
+        style: 'currency',
+        currency: 'USD'
+    }).format(num);
 }
 
+// Formato fecha compacto (ej: ENE 8 - 14:30)
 function getShortDate(timestamp) {
     if (!timestamp) return "-";
-    const dateStr = new Date(timestamp).toLocaleString('es-CO', {
-        timeZone: 'America/Bogota',
-        month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
-    });
-    return dateStr.toUpperCase().replace('.', '');
+    const d = new Date(timestamp);
+    const month = d.toLocaleString('es-CO', { timeZone: 'America/Bogota', month: 'short' }).toUpperCase().replace('.', '');
+    const day = d.getDate();
+    const time = d.toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false });
+    return `${month} ${day} - ${time}`;
 }
 
 function getTimeOnly(timestamp) {
@@ -180,17 +192,22 @@ function loadDB() {
         try {
             const data = JSON.parse(fs.readFileSync(DB_FILE));
             activeTokens = data.tokens || {};
-            // Recuperamos los IDs nuevos o reseteamos si es estructura vieja
             liveListIds = data.liveListIds || { top1: null, top2: null };
-            // Corrección por si viene de la estructura vieja
-            if (liveListIds.top !== undefined) {
-                liveListIds = { top1: null, top2: null };
-            }
-
             simulationAmount = data.simulationAmount || 7;
             simulationTimeMinutes = data.simulationTimeMinutes || 2; 
 
-            log(`DB Cargada: ${Object.keys(activeTokens).length} tokens.`, "INFO");
+            // Limpieza inicial al cargar por si el bot estuvo apagado
+            const now = Date.now();
+            let cleaned = false;
+            for (const ca in activeTokens) {
+                if ((now - activeTokens[ca].detectedAt) > MAX_AGE_MS) {
+                    delete activeTokens[ca];
+                    cleaned = true;
+                }
+            }
+            if(cleaned) saveDB();
+
+            log(`DB Cargada: ${Object.keys(activeTokens).length} tokens activos.`, "INFO");
         } catch (e) {
             log("DB nueva o corrupta.", "ERROR");
             activeTokens = {};
@@ -266,7 +283,7 @@ bot.onText(/[\/\.]dashboard/, async (msg) => {
         }, 'dashboard-empty', 'urgent');
     } else {
         const loadingMsg = await safeTelegramCall(async () => {
-            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Generando panel doble...</b>", { parse_mode: 'HTML' });
+            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Generando paneles...</b>", { parse_mode: 'HTML' });
         }, 'dashboard-loading', 'urgent');
 
         await updateTracking();
@@ -295,7 +312,7 @@ bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
         delete activeTokens[foundCa];
         saveDB();
         log(`Token eliminado manualmente: ${symbol} (${foundCa})`, "DELETE");
-        await bot.sendMessage(DESTINATION_ID, `🗑️ <b>${symbol}</b> ha sido eliminado de la lista.`, { parse_mode: 'HTML' });
+        await bot.sendMessage(DESTINATION_ID, `🗑️ <b>${symbol}</b> ha sido eliminado.`, { parse_mode: 'HTML' });
         await updateTracking();
     } else {
         await bot.sendMessage(DESTINATION_ID, `❌ No se encontró el token: <b>${input}</b>`, { parse_mode: 'HTML' });
@@ -392,9 +409,18 @@ function updateSimulationLogic(token, currentPrice, currentFdv) {
 }
 
 // Función auxiliar para generar el HTML de un solo token
-function formatTokenBlock(t, index, rankingOffset) {
+function formatTokenBlock(t, index) {
+    const now = Date.now();
     const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
+    
+    // --- LÓGICA ETIQUETAS ---
     let statusIcons = "";
+    
+    // Etiqueta de NUEVO (< 15 min)
+    if ((now - t.detectedAt) < NEW_TAG_MS) {
+        statusIcons += "🆕 <b>NUEVO</b> ";
+    }
+
     if (t.mentions.length >= 3) statusIcons += "🔥";
     if (t.isRecoveringNow) statusIcons += " ♻️";
     if (t.isBreakingAth) statusIcons += " ⚡";
@@ -405,8 +431,8 @@ function formatTokenBlock(t, index, rankingOffset) {
     if (stats && stats.price2Min !== null) {
          const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
          const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
-         const iconSim = profitPct >= 0 ? '📈' : '📉';
-         simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCurrency(stats.simEntryFdv)}`; 
+         const iconSim = profitPct >= 0 ? '🟢' : '🔴';
+         simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCompactNumber(stats.simEntryFdv)}`; 
     } else if (stats) {
          const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
          const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
@@ -420,11 +446,17 @@ function formatTokenBlock(t, index, rankingOffset) {
     const hiddenMentions = t.mentions.length - recentMentions.length;
     const moreText = hiddenMentions > 0 ? `\n<i>...y ${hiddenMentions} más.</i>` : "";
 
-    return `${index + rankingOffset}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n   ${simText}\n   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a>\n   <blockquote expandable>${mentionsList}${moreText}</blockquote>\n\n`;
+    return `${index}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n` +
+           `   💰 Entry: ${formatCompactNumber(t.entryFdv)} ➔ <b>Now: ${formatCompactNumber(t.currentFdv)}</b>\n` + 
+           `   ${simText}\n` + 
+           `   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a> | <a href="https://dexscreener.com/solana/${t.ca}">DEX</a>\n` + 
+           `   <blockquote expandable>${mentionsList}${moreText}</blockquote>\n\n`;
 }
 
-// Función Principal Modificada (Paginación)
+// Función Principal Modificada (Doble Dashboard)
 async function updateTopPerformersMessage(tokens) {
+    const now = Date.now();
+
     if (tokens.length === 0) {
         if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
         if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
@@ -435,35 +467,46 @@ async function updateTopPerformersMessage(tokens) {
         return;
     }
 
-    tokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
+    // 1. Separar tokens en FRESH (< 2h) y MATURE (> 2h y < 7h)
+    const freshTokens = tokens.filter(t => (now - t.detectedAt) < TIME_SPLIT_MS);
+    const matureTokens = tokens.filter(t => (now - t.detectedAt) >= TIME_SPLIT_MS);
 
-    const group1 = tokens.slice(0, 10);  
-    const group2 = tokens.slice(10, 20); 
+    // 2. Ordenar ambos por mejor rendimiento
+    freshTokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
+    matureTokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
 
-    // --- PROCESAR MENSAJE 1 (TOP 1-10) ---
-    let text1 = `📊 <b>TOP PERFORMERS (1-10)</b>\n`;
-    text1 += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
-    
-    for (const [i, t] of group1.entries()) {
-        const block = formatTokenBlock(t, i, 1);
-        if ((text1.length + block.length) > 4000) { text1 += `\n<i>(Corte por límite)...</i>`; break; }
-        text1 += block;
-    }
-    text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
+    // 3. Tomar solo TOP 5 de cada grupo
+    const topFresh = freshTokens.slice(0, 5);
+    const topMature = matureTokens.slice(0, 5);
 
-    await handleMessageSend(text1, 'top1', 'p1');
-
-    // --- PROCESAR MENSAJE 2 (TOP 11-20) ---
-    if (group2.length > 0) {
-        let text2 = `📊 <b>TOP PERFORMERS (11-20)</b>\n\n`;
+    // --- MENSAJE 1: FRESH GEMS (< 2 HORAS) ---
+    if (topFresh.length > 0) {
+        let text1 = `🚀 <b>FRESH GEMS (< 2 Horas)</b>\n`;
+        text1 += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
         
-        for (const [i, t] of group2.entries()) {
-            const block = formatTokenBlock(t, i, 11); 
-            if ((text2.length + block.length) > 4000) { text2 += `\n<i>(Corte por límite)...</i>`; break; }
-            text2 += block;
+        for (const [i, t] of topFresh.entries()) {
+            text1 += formatTokenBlock(t, i + 1);
         }
-        text2 += `⚡ <i>Page 2</i>`;
+        text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
+        await handleMessageSend(text1, 'top1', 'p1');
+    } else {
+        if (liveListIds.top1) {
+            try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e){}
+            liveListIds.top1 = null;
+            lastSentText.p1 = "";
+            saveDB();
+        }
+    }
+
+    // --- MENSAJE 2: HOLDING STRONG (> 2 HORAS) ---
+    if (topMature.length > 0) {
+        let text2 = `🛡️ <b>HOLDING STRONG (> 2 Horas)</b>\n`;
+        text2 += `<i>Top performers estables</i>\n\n`;
         
+        for (const [i, t] of topMature.entries()) {
+            text2 += formatTokenBlock(t, i + 1);
+        }
+        text2 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
         await handleMessageSend(text2, 'top2', 'p2');
     } else {
         if (liveListIds.top2) {
@@ -516,17 +559,30 @@ async function updateTracking() {
 
     try {
         const allAddresses = Object.keys(activeTokens);
-        
-        if (allAddresses.length === 0) {
+        const now = Date.now();
+        let dbChanged = false;
+
+        // Limpieza previa de tokens expirados (> 7 horas)
+        const validAddresses = [];
+        for (const ca of allAddresses) {
+            if ((now - activeTokens[ca].detectedAt) > MAX_AGE_MS) {
+                delete activeTokens[ca];
+                dbChanged = true;
+                log(`Token eliminado por antigüedad (>7h): ${ca}`, "DELETE");
+            } else {
+                validAddresses.push(ca);
+            }
+        }
+
+        if (validAddresses.length === 0) {
+            if (dbChanged) saveDB();
             if (liveListIds.top1 || liveListIds.top2) await updateTopPerformersMessage([]); 
             return;
         }
 
         const chunks = [];
-        for (let i = 0; i < allAddresses.length; i += BATCH_SIZE) chunks.push(allAddresses.slice(i, i + BATCH_SIZE));
+        for (let i = 0; i < validAddresses.length; i += BATCH_SIZE) chunks.push(validAddresses.slice(i, i + BATCH_SIZE));
 
-        let dbChanged = false;
-        const now = Date.now();
         let displayList = [];
 
         for (const chunk of chunks) {
