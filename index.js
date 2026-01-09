@@ -39,6 +39,23 @@ let rateLimitEndTime = 0;
 let isTrackingUpdates = false; // <--- EL SEMÁFORO IMPRESCINDIBLE
 let lastSentText = ""; // <--- Para evitar editar si el texto no cambió
 
+let activeTokens = {}; 
+let dashboardMsgId = null; 
+let simulationAmount = 7; 
+let simulationTimeMinutes = 2; 
+
+// AHORA GUARDAMOS DOS IDs (Página 1 y Página 2)
+let liveListIds = {
+    top1: null, // Mensaje del 1 al 10
+    top2: null  // Mensaje del 11 al 20
+};
+
+// Rate limiting de texto para DOS mensajes
+let lastSentText = {
+    p1: "",
+    p2: ""
+};
+
 // Rate limiting configuration
 const RATE_LIMIT_DELAY = 1000; 
 let lastApiCall = 0; 
@@ -260,47 +277,34 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
     await bot.sendMessage(DESTINATION_ID, `✅ Inversión simulada: $${amount}`);
 });
 
-// COMANDO: DASHBOARD (Invocar panel manualmente)
+// COMANDO: DASHBOARD
 bot.onText(/[\/\.]dashboard/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
 
-    // 1. Limpieza preventiva: Si el bot cree que hay un mensaje activo, bórralo de la memoria
-    // para forzar que el próximo sea uno nuevo al final del chat.
-    if (liveListIds.top) {
-        try { 
-            await bot.deleteMessage(DESTINATION_ID, liveListIds.top); 
-        } catch (e) {
-            // Si falla (ej. el mensaje ya no existía), no importa, seguimos.
-        }
-        liveListIds.top = null;
-        saveDB();
-    }
+    // Borrar mensajes anteriores si existen
+    if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
+    if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
+    
+    liveListIds.top1 = null;
+    liveListIds.top2 = null;
+    saveDB();
 
     const tokensList = Object.values(activeTokens);
 
-    // 2. Escenario: NO hay tokens
     if (tokensList.length === 0) {
         await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, 
-                `📡 <b>MONITOR ACTIVO</b>\n\n` +
-                `Actualmente no hay tokens en seguimiento.\n` +
-                `El panel <b>Top Performers</b> aparecerá automáticamente cuando llegue la primera señal válida.`, 
+                `📡 <b>MONITOR ACTIVO</b>\n\nSin tokens por ahora.`, 
                 { parse_mode: 'HTML' }
             );
-        }, 'dashboard-empty', 'urgent'); // Usamos 'urgent' para que responda rápido
-    } 
-    // 3. Escenario: HAY tokens
-    else {
-        // Enviamos un mensaje temporal de "Cargando"
+        }, 'dashboard-empty', 'urgent');
+    } else {
         const loadingMsg = await safeTelegramCall(async () => {
-            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Actualizando precios y generando panel...</b>", { parse_mode: 'HTML' });
+            return await bot.sendMessage(DESTINATION_ID, "🔄 <b>Generando panel doble...</b>", { parse_mode: 'HTML' });
         }, 'dashboard-loading', 'urgent');
 
-        // Ejecutamos la actualización completa (busca precios en API y genera el panel)
-        // Esto creará el nuevo panel Top Performers automáticamente.
         await updateTracking();
 
-        // Borramos el mensaje de "Cargando" para que quede limpio
         if (loadingMsg) {
             try { await bot.deleteMessage(DESTINATION_ID, loadingMsg.message_id); } catch(e){}
         }
@@ -342,11 +346,13 @@ bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
 // COMANDO: NUKE
 bot.onText(/[\/\.]nuke/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
-    if (liveListIds.top) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch(e) {}
+    if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e) {}
+    if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e) {}
+    
     activeTokens = {};
-    liveListIds = { top: null };
+    liveListIds = { top1: null, top2: null };
     saveDB();
-    // AGREGADO: 'urgent'
+    
     await safeTelegramCall(async () => {
         await bot.sendMessage(DESTINATION_ID, "☢️ **BASE DE DATOS ELIMINADA**", { parse_mode: 'Markdown' });
     }, 'nuke-command', 'urgent');
@@ -355,12 +361,14 @@ bot.onText(/[\/\.]nuke/, async (msg) => {
 // COMANDO: CLEAN
 bot.onText(/[\/\.]clean/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
-    if (liveListIds.top) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch(e) {}
-    liveListIds.top = null;
+    if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e) {}
+    if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e) {}
+    
+    liveListIds = { top1: null, top2: null };
     saveDB();
-    // AGREGADO: 'urgent'
+
     await safeTelegramCall(async () => {
-        await bot.sendMessage(DESTINATION_ID, `🗑️ Lista visual eliminada.`);
+        await bot.sendMessage(DESTINATION_ID, `🗑️ Paneles visuales eliminados.`);
     }, 'clean-command', 'urgent');
 });
 
@@ -428,88 +436,131 @@ function updateSimulationLogic(token, currentPrice, currentFdv) {
     }
 }
 
-async function updateTopPerformersMessage(tokens) {
-    const type = 'top';
+// Función auxiliar para generar el HTML de un solo token
+function formatTokenBlock(t, index, rankingOffset) {
+    const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
+    let statusIcons = "";
+    if (t.mentions.length >= 3) statusIcons += "🔥";
+    if (t.isRecoveringNow) statusIcons += " ♻️";
+    if (t.isBreakingAth) statusIcons += " ⚡";
+
+    // Lógica de simulación
+    const stats = t.listStats ? t.listStats['top'] : null;
+    let simText = `⏳ <i>Simulando...</i>`;
     
-    // Si no hay tokens, borrar mensaje y salir
+    if (stats && stats.price2Min !== null) {
+         const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
+         const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
+         const iconSim = profitPct >= 0 ? '📈' : '📉';
+         simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCurrency(stats.simEntryFdv)}`; 
+    } else if (stats) {
+         const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
+         const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
+         simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
+    }
+
+    // AQUI CAMBIAMOS A 5 MENCIONES
+    const recentMentions = t.mentions.slice(-5); 
+    const mentionsList = recentMentions.map(m => `• ${getShortDate(m.time)} - ${escapeHtml(m.channel)}`).join('\n');
+    
+    const hiddenMentions = t.mentions.length - recentMentions.length;
+    const moreText = hiddenMentions > 0 ? `\n<i>...y ${hiddenMentions} más.</i>` : "";
+
+    return `${index + rankingOffset}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n   ${simText}\n   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a>\n   <blockquote expandable>${mentionsList}${moreText}</blockquote>\n\n`;
+}
+
+// Función Principal Modificada
+async function updateTopPerformersMessage(tokens) {
+    // Si no hay tokens, limpiar todo
     if (tokens.length === 0) {
-        if (liveListIds.top) {
-            try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch (e) {}
-            liveListIds.top = null;
-            lastSentText = ""; // Resetear
-            saveDB();
-        }
+        if (liveListIds.top1) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch (e) {}
+        if (liveListIds.top2) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch (e) {}
+        liveListIds.top1 = null;
+        liveListIds.top2 = null;
+        lastSentText = { p1: "", p2: "" };
+        saveDB();
         return;
     }
 
-    // Ordenar tokens (Misma lógica tuya)
+    // Ordenar tokens
     tokens.sort((a, b) => (b.currentFdv / b.entryFdv) - (a.currentFdv / a.entryFdv));
-    const displayTokens = tokens.slice(0, 20);
 
-    // --- CONSTRUCCIÓN DEL TEXTO ---
-    let text = `📊 <b>TOP PERFORMERS (TOP 20)</b>\n`;
-    text += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
+    // Dividir en dos grupos
+    const group1 = tokens.slice(0, 10);  // Top 1 al 10
+    const group2 = tokens.slice(10, 20); // Top 11 al 20
 
-    displayTokens.forEach((t, index) => {
-        const growth = ((t.currentFdv / t.entryFdv - 1) * 100).toFixed(0);
-        let statusIcons = "";
-        if (t.mentions.length >= 3) statusIcons += "🔥";
-        if (t.isRecoveringNow) statusIcons += " ♻️";
-        if (t.isBreakingAth) statusIcons += " ⚡";
-
-        // Simulacion text logic...
-        const stats = t.listStats ? t.listStats['top'] : null;
-        let simText = `⏳ <i>Simulando...</i>`;
-        
-        if (stats && stats.price2Min !== null) {
-             const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
-             const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
-             const iconSim = profitPct >= 0 ? '📈' : '📉';
-             simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCurrency(stats.simEntryFdv)}`; 
-        } else if (stats) {
-             const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
-             const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
-             simText = `⏳ <b>Sim ($${simulationAmount}):</b> Esperando entrada (${timeLeft}s)`;
-        }
-
-        const mentionsList = t.mentions.map(m => `• ${getShortDate(m.time)} - ${escapeHtml(m.channel)}`).join('\n'); // Tu map completo
-
-        text += `${index + 1}. ${statusIcons} <b>$${escapeHtml(t.symbol)}</b> (+${growth}%)\n   💰 Entry: ${formatCurrency(t.entryFdv)} ➔ <b>Now: ${formatCurrency(t.currentFdv)}</b>\n   ${simText}\n   🔗 <a href="https://gmgn.ai/sol/token/${t.ca}">GMGN</a>\n   <blockquote expandable>${mentionsList}</blockquote>\n\n`;
-    });
+    // --- PROCESAR MENSAJE 1 (TOP 1-10) ---
+    let text1 = `📊 <b>TOP PERFORMERS (1-10)</b>\n`;
+    text1 += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
     
-    text += `⚡ <i>Actualizado: ${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}</i>`;
+    for (const [i, t] of group1.entries()) {
+        const block = formatTokenBlock(t, i, 1);
+        if ((text1.length + block.length) > 4000) { text1 += `\n<i>(Corte por límite)...</i>`; break; }
+        text1 += block;
+    }
+    text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
 
-    // --- AQUÍ ESTÁ EL CAMBIO IMPORTANTE: PASAR 'text' AL FINAL ---
+    await handleMessageSend(text1, 'top1', 'p1');
 
-    // 1. Intentar EDITAR
-    if (liveListIds.top) {
+    // --- PROCESAR MENSAJE 2 (TOP 11-20) ---
+    // Solo enviamos el segundo mensaje si hay tokens para mostrar
+    if (group2.length > 0) {
+        let text2 = `📊 <b>TOP PERFORMERS (11-20)</b>\n\n`;
+        
+        for (const [i, t] of group2.entries()) {
+            const block = formatTokenBlock(t, i, 11); // Offset 11 para que la lista empiece en 11
+            if ((text2.length + block.length) > 4000) { text2 += `\n<i>(Corte por límite)...</i>`; break; }
+            text2 += block;
+        }
+        text2 += `⚡ <i>Page 2</i>`;
+        
+        await handleMessageSend(text2, 'top2', 'p2');
+    } else {
+        // Si teníamos un mensaje 2 pero ahora hay menos de 10 tokens, lo borramos
+        if (liveListIds.top2) {
+            try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e){}
+            liveListIds.top2 = null;
+            lastSentText.p2 = "";
+            saveDB();
+        }
+    }
+}
+
+// Función auxiliar para enviar/editar (Reduce código repetido)
+async function handleMessageSend(text, idKey, textKey) {
+    // Si el texto es igual al anterior, no hacemos nada (ahorra API)
+    if (text === lastSentText[textKey]) return;
+
+    if (liveListIds[idKey]) {
+        // Editar
         try {
             await safeTelegramCall(async () => {
                 return await bot.editMessageText(text, {
                     chat_id: DESTINATION_ID,
-                    message_id: liveListIds.top,
+                    message_id: liveListIds[idKey],
                     parse_mode: 'HTML',
                     disable_web_page_preview: true
                 });
-            }, `edit-${type}`, type, text); // <--- AÑADIR 'text' AQUÍ
+            }, `edit-${idKey}`, 'top');
+            lastSentText[textKey] = text;
         } catch (error) {
-            // Manejo de error si se borró el mensaje manual
-            liveListIds.top = null;
-            lastSentText = "";
-            saveDB();
+            // Si falla edición (ej. borrado manual), reiniciamos ID
+            liveListIds[idKey] = null;
         }
     }
-    
-    // 2. Si no hay ID, CREAR
-    if (!liveListIds.top) {
+
+    if (!liveListIds[idKey]) {
+        // Crear
         const sent = await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, text, { 
                 parse_mode: 'HTML', 
                 disable_web_page_preview: true 
             });
-        }, `create-${type}`, type, text); // <--- AÑADIR 'text' AQUÍ
+        }, `create-${idKey}`, 'top');
+        
         if (sent) {
-            liveListIds.top = sent.message_id;
+            liveListIds[idKey] = sent.message_id;
+            lastSentText[textKey] = text;
             saveDB();
         }
     }
