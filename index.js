@@ -24,7 +24,7 @@ const TARGET_CHANNELS = ["kolsignal", "degen_smartmoney", "bing_community_monito
 const MIN_MC_ENTRY = 10000;     
 const MIN_MC_KEEP = 10000;      
 const BATCH_SIZE = 30;          
-const UPDATE_INTERVAL = 20000;  
+const UPDATE_INTERVAL = 15000;  
 const MIN_GROWTH_SHOW = 1.00; // Mostrar todos para filtrar después en el TOP 10
 const LIST_HOLD_TIME = 15 * 60 * 1000; 
 
@@ -32,7 +32,7 @@ const LIST_HOLD_TIME = 15 * 60 * 1000;
 let lastMessageUpdate = {
     top: 0 // Cambiado para solo usar 'top'
 };
-const MESSAGE_UPDATE_COOLDOWN = 20000; 
+const MESSAGE_UPDATE_COOLDOWN = 15000; 
 let telegramRateLimited = false;
 let rateLimitEndTime = 0; 
 
