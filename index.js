@@ -465,7 +465,7 @@ async function updateTopPerformersMessage(tokens) {
              const currentValue = (t.currentPrice / stats.price2Min) * simulationAmount;
              const profitPct = ((currentValue - simulationAmount) / simulationAmount) * 100;
              const iconSim = profitPct >= 0 ? '📈' : '📉';
-             simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)`; // Tu linea completa
+             simText = `💵 <b>Sim ($${simulationAmount}):</b> ${iconSim} $${currentValue.toFixed(2)} (${profitPct.toFixed(1)}%)\n   🛒 <b>Compra:</b> ${getTimeOnly(stats.simEntryTime)} | MC: ${formatCurrency(stats.simEntryFdv)}`; 
         } else if (stats) {
              const waitTimeMs = simulationTimeMinutes * 60 * 1000; 
              const timeLeft = Math.ceil((waitTimeMs - (Date.now() - stats.entryTime)) / 1000);
