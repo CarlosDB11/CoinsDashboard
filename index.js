@@ -224,6 +224,38 @@ bot.onText(/[\/\.]setinvest (\d+)/, async (msg, match) => {
     await bot.sendMessage(DESTINATION_ID, `✅ Inversión simulada: $${amount}`);
 });
 
+// COMANDO: ELIMINAR UN TOKEN ESPECÍFICO
+bot.onText(/[\/\.](remove|del) (.+)/, async (msg, match) => {
+    if (msg.chat.id !== DESTINATION_ID) return;
+    const input = match[2].trim();
+    let foundCa = null;
+
+    // 1. Buscar por CA directa
+    if (activeTokens[input]) {
+        foundCa = input;
+    } 
+    // 2. Si no es CA, buscar por Símbolo
+    else {
+        foundCa = Object.keys(activeTokens).find(ca => 
+            activeTokens[ca].symbol.toUpperCase() === input.toUpperCase()
+        );
+    }
+
+    if (foundCa) {
+        const symbol = activeTokens[foundCa].symbol;
+        delete activeTokens[foundCa];
+        saveDB();
+        
+        log(`Token eliminado manualmente: ${symbol} (${foundCa})`, "DELETE");
+        await bot.sendMessage(DESTINATION_ID, `🗑️ <b>${symbol}</b> ha sido eliminado de la lista.`, { parse_mode: 'HTML' });
+        
+        // Actualizar el panel inmediatamente
+        await updateTracking();
+    } else {
+        await bot.sendMessage(DESTINATION_ID, `❌ No se encontró el token: <b>${input}</b>`, { parse_mode: 'HTML' });
+    }
+});
+
 bot.onText(/[\/\.]nuke/, async (msg) => {
     if (msg.chat.id !== DESTINATION_ID) return;
     if (liveListIds.top) try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top); } catch(e) {}
@@ -328,10 +360,10 @@ async function updateTopPerformersMessage(tokens) {
         return growthB - growthA;
     });
 
-    // CORTAR AL TOP 10
-    const displayTokens = tokens.slice(0, 10);
+    // CORTAR AL TOP 20
+    const displayTokens = tokens.slice(0, 20);
 
-    let text = `📊 <b>TOP PERFORMERS (TOP 10)</b>\n`;
+    let text = `📊 <b>TOP PERFORMERS (TOP 20)</b>\n`;
     text += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
 
     displayTokens.forEach((t, index) => {
