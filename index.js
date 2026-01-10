@@ -449,7 +449,18 @@ function formatTokenBlock(t, index) {
 
     // 5 menciones máximo
     const recentMentions = t.mentions.slice(-5); 
-    const mentionsList = recentMentions.map(m => `• ${getShortDate(m.time)} - ${escapeHtml(m.channel)}`).join('\n');
+    
+    // CORRECCIÓN: Agregar <a href> para que sea clickeable
+    const mentionsList = recentMentions.map(m => {
+        const timeStr = getShortDate(m.time);
+        const channelStr = escapeHtml(m.channel);
+        // Si hay link, lo hacemos clickeable, si no, texto plano
+        if (m.link) {
+            return `• ${timeStr} - <a href="${m.link}">${channelStr}</a>`;
+        } else {
+            return `• ${timeStr} - ${channelStr}`;
+        }
+    }).join('\n');
     
     const hiddenMentions = t.mentions.length - recentMentions.length;
     const moreText = hiddenMentions > 0 ? `\n<i>...y ${hiddenMentions} más.</i>` : "";
@@ -701,22 +712,38 @@ async function updateTracking() {
         if (!content) return;
 
         let channelName = "Desconocido";
-        let messageLink = null;
+        let messageLink = ""; // Inicializar vacío
+
         try { 
-            const chat = await msg.getChat(); 
+            const chat = await msg.getChat();
+            
+            // Lógica mejorada para nombres y enlaces
             if (chat.username) { 
                 channelName = `@${chat.username}`; 
                 messageLink = `https://t.me/${chat.username}/${msg.id}`; 
             } else { 
                 channelName = chat.title || msg.chatId.toString(); 
+                // Para canales privados, el formato es t.me/c/ID_SIN_100/MSG_ID
+                // Los IDs de canales privados suelen empezar por -100, hay que quitarlo para el link
+                const cleanId = chat.id.toString().replace('-100', '');
+                messageLink = `https://t.me/c/${cleanId}/${msg.id}`;
             } 
-        } catch (e) {}
+        } catch (e) {
+            console.log("Error obteniendo chat info:", e.message);
+        }
 
         const matches = content.match(SOLANA_ADDRESS_REGEX);
         if (matches) {
             const uniqueAddresses = [...new Set(matches)];
             for (const ca of uniqueAddresses) {
-                const mentionData = { channel: channelName, link: messageLink, time: Date.now() };
+                // CORRECCIÓN DE HORA: Usar msg.date (segundos) * 1000 para milisegundos
+                const msgTime = msg.date ? (msg.date * 1000) : Date.now();
+                
+                const mentionData = { 
+                    channel: channelName, 
+                    link: messageLink, 
+                    time: msgTime // <--- ESTO ARREGLA LA HORA INCORRECTA
+                };
 
                 if (activeTokens[ca]) {
                     if (!activeTokens[ca].mentions.some(m => m.channel === channelName)) {
@@ -737,7 +764,8 @@ async function updateTracking() {
                         maxFdv: data.fdv,
                         isDipping: false,
                         listStats: {}, 
-                        mentions: [mentionData], detectedAt: Date.now()
+                        mentions: [mentionData], 
+                        detectedAt: msgTime // Usamos la hora del mensaje como detección
                     };
                     
                     updateSimulationLogic(activeTokens[ca], data.price, data.fdv);
