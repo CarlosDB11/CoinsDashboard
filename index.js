@@ -295,7 +295,8 @@ bot.onText(/[\/\.]dashboard/, async (msg) => {
             return await bot.sendMessage(DESTINATION_ID, 
                 `📡 <b>MONITOR ACTIVO</b>\n\n` +
                 `🧹 La base de datos se ha limpiado.\n` +
-                `📉 No hay tokens activos (todos > 7h o < MC mínimo).`, 
+                // CORRECCIÓN AQUÍ: Usamos &gt; y &lt; en lugar de > y <
+                `📉 No hay tokens activos (todos &gt; 7h o &lt; MC mínimo).`, 
                 { parse_mode: 'HTML' }
             );
         }, 'dashboard-empty', 'urgent');
