@@ -489,15 +489,16 @@ async function updateTopPerformersMessage(tokens) {
 
     // --- MENSAJE 1: FRESH GEMS (< 2 HORAS) ---
     if (topFresh.length > 0) {
-        let text1 = `🚀 <b>FRESH GEMS (< 2 Horas)</b>\n`;
-        text1 += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
-        
-        for (const [i, t] of topFresh.entries()) {
-            text1 += formatTokenBlock(t, i + 1);
-        }
-        text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
-        await handleMessageSend(text1, 'top1', 'p1');
-    } else {
+    // CAMBIO: (< 2 Horas)  --->  (&lt; 2 Horas)
+    let text1 = `🚀 <b>FRESH GEMS (&lt; 2 Horas)</b>\n`; 
+    text1 += `<i>Inversión Simulada: $${simulationAmount} | Tiempo: ${simulationTimeMinutes}m</i>\n\n`;
+    
+    for (const [i, t] of topFresh.entries()) {
+        text1 += formatTokenBlock(t, i + 1);
+    }
+    text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
+    await handleMessageSend(text1, 'top1', 'p1');
+} else {
         if (liveListIds.top1) {
             try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e){}
             liveListIds.top1 = null;
@@ -508,15 +509,16 @@ async function updateTopPerformersMessage(tokens) {
 
     // --- MENSAJE 2: HOLDING STRONG (> 2 HORAS) ---
     if (topMature.length > 0) {
-        let text2 = `🛡️ <b>HOLDING STRONG (> 2 Horas)</b>\n`;
-        text2 += `<i>Top performers estables</i>\n\n`;
-        
-        for (const [i, t] of topMature.entries()) {
-            text2 += formatTokenBlock(t, i + 1);
-        }
-        text2 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
-        await handleMessageSend(text2, 'top2', 'p2');
-    } else {
+    // CAMBIO: (> 2 Horas)  --->  (&gt; 2 Horas)
+    let text2 = `🛡️ <b>HOLDING STRONG (&gt; 2 Horas)</b>\n`;
+    text2 += `<i>Top performers estables</i>\n\n`;
+    
+    for (const [i, t] of topMature.entries()) {
+        text2 += formatTokenBlock(t, i + 1);
+    }
+    text2 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
+    await handleMessageSend(text2, 'top2', 'p2');
+} else {
         if (liveListIds.top2) {
             try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e){}
             liveListIds.top2 = null;
