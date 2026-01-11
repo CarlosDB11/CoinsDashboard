@@ -509,7 +509,7 @@ async function updateTopPerformersMessage(tokens) {
         text1 += formatTokenBlock(t, i + 1);
     }
     text1 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
-    await handleMessageSend(text1, 'top1', 'p1');
+    await handleMessageSend(text1, 'top1', 'p1', 'top1');
 } else {
         if (liveListIds.top1) {
             try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top1); } catch(e){}
@@ -529,7 +529,7 @@ async function updateTopPerformersMessage(tokens) {
         text2 += formatTokenBlock(t, i + 1);
     }
     text2 += `⚡ <i>Updated: ${getTimeOnly(Date.now())}</i>`;
-    await handleMessageSend(text2, 'top2', 'p2');
+    await handleMessageSend(text2, 'top2', 'p2', 'top2');
 } else {
         if (liveListIds.top2) {
             try { await bot.deleteMessage(DESTINATION_ID, liveListIds.top2); } catch(e){}
@@ -540,11 +540,12 @@ async function updateTopPerformersMessage(tokens) {
     }
 }
 
-async function handleMessageSend(text, idKey, textKey) {
+async function handleMessageSend(text, idKey, textKey, rateLimitType) {
     if (text === lastSentText[textKey]) return;
 
     if (liveListIds[idKey]) {
         try {
+            // AQUÍ ESTÁ EL CAMBIO: Usamos rateLimitType en vez de 'top' fijo
             await safeTelegramCall(async () => {
                 return await bot.editMessageText(text, {
                     chat_id: DESTINATION_ID,
@@ -552,7 +553,8 @@ async function handleMessageSend(text, idKey, textKey) {
                     parse_mode: 'HTML',
                     disable_web_page_preview: true
                 });
-            }, `edit-${idKey}`, 'top');
+            }, `edit-${idKey}`, rateLimitType); 
+            
             lastSentText[textKey] = text;
         } catch (error) {
             liveListIds[idKey] = null;
@@ -560,12 +562,13 @@ async function handleMessageSend(text, idKey, textKey) {
     }
 
     if (!liveListIds[idKey]) {
+        // AQUÍ TAMBIÉN: Usamos rateLimitType
         const sent = await safeTelegramCall(async () => {
             return await bot.sendMessage(DESTINATION_ID, text, { 
                 parse_mode: 'HTML', 
                 disable_web_page_preview: true 
             });
-        }, `create-${idKey}`, 'top');
+        }, `create-${idKey}`, rateLimitType);
         
         if (sent) {
             liveListIds[idKey] = sent.message_id;
